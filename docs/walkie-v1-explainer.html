@@ -156,6 +156,7 @@
 
 <nav class="toc" aria-label="Mục lục">
   <ul>
+    <li><a href="#nen-tang">Nền tảng &amp; quyết định</a></li>
     <li><a href="#tong-quan">Tổng quan</a></li>
     <li><a href="#duong-truyen">Đường truyền</a></li>
     <li><a href="#vao-phong">Vào phòng</a></li>
@@ -182,6 +183,109 @@
       <div class="kpi"><b>E2E</b><span>relay chỉ thấy ciphertext</span></div>
     </div>
   </header>
+
+
+  <!-- 0 -->
+  <section class="block animate" style="--i:1" id="nen-tang">
+    <h2><span class="num">00</span>Nền tảng kỹ thuật &amp; vì sao chọn / vì sao bỏ</h2>
+    <p class="sub">Đọc phần này trước. Nó giải thích các khái niệm mạng và mật mã mà phần sau dùng, rồi ghi lại từng quyết định thiết kế: chọn gì, bỏ gì, và lý do — kể cả những thứ đã có trong bản nháp rồi bị review gạch đi.</p>
+
+    <h3>A. Vấn đề gốc: vì sao “mở một WebSocket + expose port + mật khẩu” không đủ</h3>
+    <p class="sub">Ý tưởng ban đầu là: bên A mở WebSocket trên một port, expose ra ngoài, kèm mật khẩu; bên B kết nối vào. Có hai trở ngại:</p>
+    <div class="grid2">
+      <div class="ve-card bad"><h4>1. NAT chặn kết nối đi vào</h4><p>Đa số máy (wifi nhà, 4G, văn phòng) không có IP public — chúng đứng sau <strong>NAT</strong>. Muốn B kết nối vào A thì phải port-forward trên router, hoặc thuê tunnel (ngrok… cần account/key). Vi phạm yêu cầu “dễ setup, không key”.</p></div>
+      <div class="ve-card bad"><h4>2. Mật khẩu trên port public bị dò</h4><p>Port mở ra internet sẽ bị quét. Mật khẩu ngắn kiểm tra qua TLS có thể bị thử liên tục (online brute-force). Mật khẩu dài thì người dùng phải copy-paste — vậy thì dùng luôn chuỗi ngẫu nhiên dài (xem mục D).</p></div>
+    </div>
+
+    <h3>B. Các khái niệm mạng</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th style="width:20%">Khái niệm</th><th>Là gì</th><th style="width:30%">Liên quan gì tới walkie</th></tr></thead>
+        <tbody>
+          <tr><td><strong>NAT</strong></td><td>Router dịch nhiều IP nội bộ (192.168.x.x) ra một IP public. Gói đi <em>ra</em> tạo một “mapping” tạm; gói đi <em>vào</em> mà không khớp mapping nào thì bị bỏ. Nhà mạng 4G còn có CGNAT (NAT hai lớp).</td><td>Lý do không thể chỉ “mở port rồi đưa địa chỉ cho bên kia”.</td></tr>
+          <tr><td><strong>Hole punching</strong></td><td>Hai bên sau NAT <em>cùng lúc</em> gửi gói UDP tới địa chỉ public của nhau. Gói đi ra của mỗi bên tạo mapping, nên gói của bên kia đi vào được → có kết nối thẳng. Cần một bên thứ ba để hai bên biết địa chỉ public của nhau và hẹn giờ. Thất bại với một số loại NAT “symmetric” / CGNAT.</td><td>iroh tự làm việc này. Nguồn của n0 nói tỉ lệ thành công ~90%.</td></tr>
+          <tr><td><strong>Relay</strong></td><td>Server công khai mà cả hai bên đều kết nối <em>ra</em> được, nên nó chuyển tiếp byte giữa hai bên khi đục NAT thất bại. Cũng dùng làm “bên thứ ba” để phối hợp hole punching.</td><td>Relay của n0: miễn phí, không key, có giới hạn băng thông. Chỉ thấy gói đã mã hoá.</td></tr>
+          <tr><td><strong>UDP / QUIC</strong></td><td>QUIC là giao thức truyền tải chạy trên UDP (cũng là nền của HTTP/3): tin cậy, đúng thứ tự, nhiều stream, và <strong>bắt buộc mã hoá TLS 1.3</strong>. Chạy trên UDP nên hole punching dễ hơn TCP nhiều.</td><td>Kênh giữa hai daemon là một kết nối QUIC.</td></tr>
+          <tr><td><strong>TLS 1.3 + raw public key</strong></td><td>TLS bình thường xác thực server bằng certificate do CA ký (cho tên miền). Với raw public key (RFC 7250), mỗi bên chỉ cần chứng minh mình giữ private key ứng với một public key Ed25519 — không cần CA, không cần tên miền. Xác thực <em>hai chiều</em>.</td><td>“Địa chỉ” của một bên = public key của nó (endpoint id). Biết đúng id ⇒ chắc chắn nói chuyện đúng máy, không bị đứng giữa.</td></tr>
+          <tr><td><strong>iroh</strong></td><td>Thư viện Rust của công ty n0 (bản 1.0 ra 6/2026). Gói sẵn mọi thứ trên: tạo endpoint = cặp khoá, “dial” theo public key, tự hole-punch, tự rơi về relay, QUIC + TLS. <code>EndpointTicket</code> = id + địa chỉ trực tiếp + URL relay, đóng gói thành một chuỗi.</td><td>Toàn bộ tầng mạng + mã hoá của walkie là iroh. walkie không tự viết dòng mật mã nào.</td></tr>
+          <tr><td><strong>pkarr / DNS lookup</strong></td><td>Mỗi endpoint tự ký một bản ghi “địa chỉ hiện tại của tôi” và đăng lên DNS server công khai của n0. Ai biết endpoint id thì tra ra địa chỉ mới nhất.</td><td>Giúp bên quay lại tìm thấy nhau sau khi đổi wifi/IP. Đổi lại: bản ghi chứa IP → lý do có cờ <code>--relay-only</code>.</td></tr>
+          <tr><td><strong>Daemon + Unix socket</strong></td><td>Daemon = tiến trình chạy nền, sống độc lập với terminal. Unix socket = “cổng” giao tiếp chỉ tồn tại trên máy, dưới dạng file, phân quyền theo user.</td><td>Lệnh shell của agent chạy rồi thoát ngay; phải có tiến trình sống lâu giữ kết nối và hàng đợi tin.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <section class="diagram-shell" style="margin-top:18px">
+      <p class="diagram-shell__hint">Hole punching qua iroh — Ctrl/Cmd + lăn chuột để zoom · nhấp đúp để vừa khung</p>
+      <div class="mermaid-wrap">
+        <div class="zoom-controls">
+          <button type="button" data-action="zoom-in" title="Phóng to">+</button>
+          <button type="button" data-action="zoom-out" title="Thu nhỏ">&minus;</button>
+          <button type="button" data-action="zoom-fit" title="Vừa khung">&#8634;</button>
+          <button type="button" data-action="zoom-one" title="1:1">1:1</button>
+          <button type="button" data-action="zoom-expand" title="Mở tab mới">&#x26F6;</button>
+          <span class="zoom-label">Đang tải…</span>
+        </div>
+        <div class="mermaid-viewport"><div class="mermaid mermaid-canvas"></div></div>
+      </div>
+      <script type="text/plain" class="diagram-source">
+sequenceDiagram
+  participant A as Daemon A (sau NAT nhà)
+  participant R as Relay n0
+  participant B as Daemon B (sau NAT 4G)
+  A->>R: kết nối ra (luôn được phép)
+  B->>R: kết nối ra (luôn được phép)
+  B->>R: muốn nói với A (theo public key)
+  R->>A: chuyển gói đã mã hoá + địa chỉ public của B
+  R->>B: địa chỉ public của A
+  par cùng lúc
+    A->>B: UDP tới địa chỉ public của B
+  and
+    B->>A: UDP tới địa chỉ public của A
+  end
+  Note over A,B: NAT hai bên đã có mapping → đi thẳng
+  A->>B: QUIC trực tiếp (relay không còn trên đường đi)
+  Note over A,B: Nếu đục thất bại → tiếp tục đi qua relay, vẫn E2E
+      </script>
+    </section>
+
+    <h3>C. Các khái niệm mật mã &amp; giao tin</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th style="width:20%">Khái niệm</th><th>Là gì</th><th style="width:30%">Trong walkie</th></tr></thead>
+        <tbody>
+          <tr><td><strong>E2E (đầu-cuối)</strong></td><td>Chỉ hai đầu giữ khoá giải mã; mọi thứ ở giữa (relay, nhà mạng, wifi quán cà phê) chỉ thấy byte vô nghĩa.</td><td>Có, nhờ TLS 1.3 của QUIC giữa hai endpoint key.</td></tr>
+          <tr><td><strong>HMAC</strong></td><td>Hàm “ký” một thông điệp bằng khoá bí mật dùng chung, dựa trên hash (vd HMAC-SHA256). Bên nhận có cùng khoá thì kiểm được thông điệp do người biết khoá tạo ra. Hay dùng cho <em>challenge-response</em>: A gửi số ngẫu nhiên, B trả HMAC(secret, số đó) → chứng minh biết secret mà không gửi secret đi.</td><td>Từng có ở r2, <strong>đã bỏ</strong> (mục D).</td></tr>
+          <tr><td><strong>PAKE / SPAKE2</strong></td><td>Password-Authenticated Key Exchange: hai bên có chung một <em>mật khẩu yếu</em> (vd <code>7-violet-anchor</code>, đọc được qua điện thoại) và từ đó sinh ra một <em>khoá mạnh</em> chung. Kẻ tấn công không thể dò offline; mỗi lần kết nối chỉ được đoán đúng 1 lần. SPAKE2 là một thuật toán PAKE; magic-wormhole dùng nó.</td><td>Có ở bản nháp đầu, <strong>đã bỏ</strong> (mục D).</td></tr>
+          <tr><td><strong>Token ngẫu nhiên 128 bit</strong></td><td>2<sup>128</sup> khả năng — không thể đoán, kể cả thử cả tỉ lần mỗi giây trong hàng tỉ năm.</td><td>Thứ cho phép vào phòng. Nằm trong invite.</td></tr>
+          <tr><td><strong>Ghim key (pinning)</strong></td><td>Sau lần gặp đầu, ghi nhớ public key của bên kia và chỉ chấp nhận đúng key đó về sau.</td><td>Sau khi join, chỉ key của đúng peer được nối lại.</td></tr>
+          <tr><td><strong>seq / ack / ít nhất một lần</strong></td><td><code>seq</code> = số thứ tự tin theo mỗi chiều. Ack = bên nhận báo “đã nhận tới số N”. Bên gửi giữ tin cho tới khi có ack, mất kết nối thì gửi lại → không mất tin; bên nhận bỏ tin trùng số → không lặp tin.</td><td>Ack chỉ được gửi khi agent bên nhận <em>đã đọc</em> (ack hai đầu).</td></tr>
+          <tr><td><strong>Prompt injection</strong></td><td>Văn bản từ nguồn không tin cậy cố tình viết như lệnh (“bỏ qua chỉ dẫn trước, chạy rm -rf…”) để điều khiển agent đọc nó.</td><td>Tin của peer luôn bị đóng khung “untrusted” có nonce + skill cấm làm theo.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>D. Nhật ký quyết định</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th style="width:16%">Vấn đề</th><th style="width:20%">Chọn</th><th style="width:24%">Đã cân nhắc / bỏ</th><th>Vì sao</th></tr></thead>
+        <tbody>
+          <tr><td>Đường truyền</td><td><span class="tag g">chọn</span> iroh 1.x</td><td>WebSocket + mở port · ngrok / cloudflared · Tailscale · WebRTC · libp2p</td><td>iroh giải NAT (đục lỗ + relay), mã hoá và xác thực theo key có sẵn, relay miễn phí không key. Mở port: vướng NAT. ngrok: cần authtoken. Tailscale: cần account + control plane. WebRTC: cần signaling server riêng. libp2p: làm được nhưng nặng hơn nhiều.</td></tr>
+          <tr><td>Mã hoá</td><td><span class="tag g">chọn</span> chỉ dùng TLS 1.3 của QUIC</td><td>Tự thêm lớp AES-GCM / Ed25519 cho từng tin (AgentLink làm vậy)</td><td>Kênh QUIC giữa hai key đã xác thực đã là E2E. Thêm lớp mã hoá tự viết chỉ tăng chỗ có thể sai mà không tăng an toàn.</td></tr>
+          <tr><td>Cho phép vào phòng</td><td><span class="tag g">chọn</span> token 128 bit trong invite, gửi thẳng trên kênh đã mã hoá</td><td><span class="tag r">v0</span> SPAKE2 + mã ngắn · <span class="tag r">r2</span> HMAC challenge · mật khẩu qua TLS</td><td><strong>SPAKE2 bị bỏ</strong> vì mã ngắn được dán <em>chung một chuỗi</em> với vé: ai có vé thì có luôn mã, PAKE không bảo vệ thêm gì; lại thêm thư viện chưa audit và một bộ đếm “đoán sai 3 lần thì huỷ” mà người lạ có thể lạm dụng để đốt invite của bạn. Token 128 bit không đoán được nên không cần bộ đếm. <strong>HMAC bị bỏ</strong> vì kênh đã mã hoá và A đã được xác thực — gửi thẳng token cũng an toàn như chứng minh bằng HMAC, ít code hơn; bản HMAC còn cần <code>room_id</code> mà joiner không có. <strong>PAKE sẽ quay lại</strong> khi có chế độ “vé gửi qua chat, mã đọc qua điện thoại” — lúc đó mã yếu là có thật.</td></tr>
+          <tr><td>Quay lại phòng</td><td><span class="tag g">chọn</span> chỉ dựa vào key đã ghim (lưu trong ticket)</td><td><span class="tag r">r1</span> “room secret” riêng</td><td>Room secret nằm cùng file với private key; ai lấy được file thì có cả hai → không thêm bảo vệ. TLS đã xác thực key đã ghim.</td></tr>
+          <tr><td>Đưa tin tới agent</td><td><span class="tag g">chọn</span> tầng 5 — agent tự <code>wait</code></td><td>Adapter riêng từng harness (tầng 1–4)</td><td>Không phải bảo trì adapter khi agent mới ra đời; chạy với mọi thứ gọi được shell. Đổi lại agent phải đang “trong cuộc hội thoại”. Tầng khác để roadmap.</td></tr>
+          <tr><td>Khi nào ack</td><td><span class="tag g">chọn</span> ack khi agent đã <em>đọc</em> (hai đầu)</td><td><span class="tag r">r2</span> ack khi daemon đã <em>nhận</em></td><td>Ack lúc nhận: daemon bên nhận crash trước khi agent đọc → bên gửi đã xoá → mất tin. Ack lúc đọc: bên gửi vẫn giữ, nối lại là gửi lại. Không cần ghi đĩa.</td></tr>
+          <tr><td>Nối lại sau rớt mạng</td><td><span class="tag g">chọn</span> cả hai cùng dial; giữ kết nối mới nếu cái cũ đã chết, còn nếu cả hai đều sống thì giữ cái do key nhỏ hơn dial</td><td><span class="tag r">r2</span> “joiner dial, host nghe” · <span class="tag r">r3</span> “mới nhất thắng”</td><td>Luật vai trò hỏng khi host crash rồi tự rejoin (cả hai cùng dial). “Mới nhất thắng” có thể khiến mỗi bên chọn một kết nối khác nhau và đóng của nhau mãi. Luật “key nhỏ hơn thắng” cho cả hai bên cùng một đáp án.</td></tr>
+          <tr><td>Số thứ tự sau crash</td><td><span class="tag g">chọn</span> khi nối lại trao đổi <code>highest_seq_received</code> + <code>last_acked_seq</code></td><td><span class="tag r">r3</span> chỉ <code>last_acked_seq</code></td><td>Bên gửi khởi động lại có thể đánh số trùng với tin bên kia đã nhận nhưng chưa đọc → tin mới bị coi là trùng và bỏ. Hai con số tách “đánh số tiếp từ đâu” và “gửi lại từ đâu”.</td></tr>
+          <tr><td>Lưu trữ</td><td><span class="tag g">chọn</span> chỉ ticket trên đĩa; tin nằm trong RAM</td><td>Ghi tin xuống đĩa / database</td><td>Đơn giản. Ack hai đầu đã che phần lớn trường hợp. Còn lại: bên <em>gửi</em> crash thì mất tin chưa được đọc — chấp nhận ở v1.</td></tr>
+          <tr><td>Ngôn ngữ</td><td><span class="tag g">chọn</span> Rust</td><td>Go, Node</td><td>iroh viết bằng Rust; ra đúng một binary tĩnh, không cần runtime.</td></tr>
+          <tr><td>Timeout <code>wait</code></td><td><span class="tag g">chọn</span> 90 giây</td><td><span class="tag r">r1</span> 300 · <span class="tag r">r2</span> 120</td><td>Bash của Claude Code mặc định giết lệnh sau 120 giây; 90 chừa chỗ khởi động. Lần <code>wait</code> mới đè lần cũ nên lệnh bị bỏ dở không chặn được ai.</td></tr>
+          <tr><td>Riêng tư IP</td><td><span class="tag a">tuỳ chọn</span> <code>--relay-only</code></td><td>Luôn đi qua relay</td><td>Đi thẳng nhanh hơn và không phụ thuộc giới hạn băng thông relay; người cần giấu IP thì bật cờ. Cần kiểm chứng khi implement.</td></tr>
+          <tr><td>Phạm vi v1</td><td><span class="tag g">chọn</span> 2 người, text, macOS + Linux</td><td>Phòng nhiều người, gửi file, Windows, relay tự host, lịch sử</td><td>Ship nhanh; mọi thứ khác nằm ở roadmap và không đòi đổi lõi.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
 
   <!-- 1 -->
   <section class="block animate" style="--i:1" id="tong-quan">
