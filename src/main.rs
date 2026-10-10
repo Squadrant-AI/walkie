@@ -8,6 +8,7 @@ mod model;
 mod paths;
 mod proto;
 mod session;
+mod ticket;
 
 use clap::{Parser, Subcommand};
 use exit::{exit_of, fail, Exit};
