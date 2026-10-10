@@ -48,3 +48,34 @@ fn send_reads_stdin() {
     let out = a.wait_for(&room, "line2", 3);
     assert!(out.contains("line1\nline2"), "{out}");
 }
+
+#[test]
+fn joiner_sees_room_ended_without_explicit_room_and_daemon_exits() {
+    // Regression: the joiner deleted its ticket on RoomEnded, so room selection found nothing
+    // (exit 4) while its daemon still held the undelivered event.
+    let (a, b) = (Machine::new(), Machine::new());
+    let room = pair(&a, &b);
+    let pid = b.pid_of(&room).unwrap();
+    assert_eq!(a.run(&["end"]).0, 0);
+    let (c, out, err) = b.run(&["wait", "--timeout", "10"]);
+    assert_eq!(c, 3, "{err}");
+    assert!(out.contains("room-ended"), "{out}");
+    assert!(
+        Machine::wait_gone(pid, 10),
+        "joiner daemon must exit after the ack"
+    );
+}
+
+#[test]
+fn unacked_terminal_event_still_bounds_the_daemon() {
+    let (a, b) = (Machine::new(), Machine::new());
+    b.set_env("WALKIE_TEST_TERMINAL_EXIT_SECS", "2");
+    let room = pair(&a, &b);
+    let pid = b.pid_of(&room).unwrap();
+    assert_eq!(a.run(&["end"]).0, 0);
+    // nobody ever waits on b
+    assert!(
+        Machine::wait_gone(pid, 12),
+        "daemon must exit without an ack"
+    );
+}

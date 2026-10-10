@@ -89,7 +89,10 @@ fn run(cli: Cli) -> anyhow::Result<Exit> {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()?;
-        rt.block_on(daemon::run(room_id, mode))?;
+        let r = rt.block_on(daemon::run(room_id, mode));
+        // don't let a lingering blocking task (DNS, etc.) keep the process alive
+        rt.shutdown_background();
+        r?;
         return Ok(Exit::Ok);
     }
     let rt = tokio::runtime::Builder::new_current_thread()

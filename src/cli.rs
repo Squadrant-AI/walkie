@@ -42,11 +42,13 @@ async fn is_active(room: &str) -> bool {
     Client::connect(room).await.is_ok()
 }
 
+/// Rooms with a live daemon. Found by socket, not by ticket: a room that just ended has no
+/// ticket any more, but its daemon still holds the undelivered `room-ended` event.
 async fn active_rooms() -> Vec<String> {
     let mut out = vec![];
-    for t in ticket::list_live(now_unix()) {
-        if is_active(&t.room).await {
-            out.push(t.room);
+    for room in paths::socket_rooms() {
+        if is_active(&room).await {
+            out.push(room);
         }
     }
     out

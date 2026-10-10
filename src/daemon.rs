@@ -762,7 +762,13 @@ impl Core {
 
     /// Exit after a `wait` client acked the terminal event, or after at most 60 s.
     fn schedule_terminal_exit(&mut self) {
-        let t = Instant::now() + TERMINAL_EXIT_MAX;
+        // test hook so the 60 s bound can be exercised quickly
+        let max = std::env::var("WALKIE_TEST_TERMINAL_EXIT_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .map(Duration::from_secs)
+            .unwrap_or(TERMINAL_EXIT_MAX);
+        let t = Instant::now() + max;
         self.exit_at = Some(self.exit_at.map_or(t, |e| e.min(t)));
     }
 

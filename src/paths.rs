@@ -91,6 +91,26 @@ pub fn runtime_dir() -> Result<PathBuf> {
     Ok(d)
 }
 
+/// Rooms that currently have a socket file (a live daemon, or a stale socket).
+pub fn socket_rooms() -> Vec<String> {
+    let Ok(dir) = runtime_dir() else {
+        return vec![];
+    };
+    let mut v: Vec<String> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .strip_suffix(".sock")
+                .map(str::to_string)
+        })
+        .collect();
+    v.sort();
+    v
+}
+
 pub fn socket_path(room: &str) -> Result<PathBuf> {
     let p = runtime_dir()?.join(format!("{room}.sock"));
     if p.as_os_str().len() >= SUN_PATH_MAX {

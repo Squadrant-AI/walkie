@@ -7,6 +7,7 @@ use std::process::{Command, Stdio};
 pub struct Machine {
     pub dir: tempfile::TempDir,
     rooms: std::cell::RefCell<Vec<String>>,
+    env: std::cell::RefCell<Vec<(String, String)>>,
 }
 
 impl Machine {
@@ -14,6 +15,7 @@ impl Machine {
         Machine {
             dir: tempfile::tempdir().unwrap(),
             rooms: Default::default(),
+            env: Default::default(),
         }
     }
     fn cmd(&self) -> Command {
@@ -22,7 +24,33 @@ impl Machine {
             .env("WALKIE_RUNTIME_DIR", self.dir.path().join("rt"))
             .env("WALKIE_TEST_LOCAL", "1")
             .env_remove("WALKIE_ROOM");
+        for (k, v) in self.env.borrow().iter() {
+            c.env(k, v);
+        }
         c
+    }
+    /// Extra env for every later command on this machine (and the daemons it spawns).
+    pub fn set_env(&self, k: &str, v: &str) {
+        self.env.borrow_mut().push((k.into(), v.into()));
+    }
+    pub fn pid_of(&self, room: &str) -> Option<i32> {
+        let f = self
+            .dir
+            .path()
+            .join("home/rooms")
+            .join(format!("{room}.pid"));
+        std::fs::read_to_string(f).ok()?.trim().parse().ok()
+    }
+    /// Waits up to `secs` for the daemon with `pid` to be gone.
+    pub fn wait_gone(pid: i32, secs: u64) -> bool {
+        for _ in 0..secs * 10 {
+            let alive = unsafe { libc_kill(pid, 0) } == 0;
+            if !alive {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        false
     }
     pub fn run(&self, args: &[&str]) -> (i32, String, String) {
         let o = self.cmd().args(args).output().unwrap();
@@ -92,6 +120,11 @@ impl Drop for Machine {
             let _ = self.cmd().args(["--room", r, "end"]).output();
         }
     }
+}
+
+extern "C" {
+    #[link_name = "kill"]
+    fn libc_kill(pid: i32, sig: i32) -> i32;
 }
 
 pub fn field<'a>(out: &'a str, key: &str) -> &'a str {
