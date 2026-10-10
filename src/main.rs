@@ -2,6 +2,7 @@
 #![allow(dead_code)]
 
 mod exit;
+mod invite;
 
 use clap::{Parser, Subcommand};
 use exit::{exit_of, fail, Exit};
