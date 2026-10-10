@@ -582,6 +582,10 @@ impl Core {
                 }
                 self.touch_save();
             }
+            // a leaving daemon lingers briefly but is no longer a receiver: storing/acking here
+            // would make the sender's leave report call the message "delivered" while it is
+            // dropped with this daemon. Unacked, it is redelivered after a rejoin (Resume).
+            Wire::Msg { .. } if self.leaving.is_some() || self.retired => {}
             other => {
                 let is_end = matches!(other, Wire::End);
                 for f in self.session.on_wire(other, now) {

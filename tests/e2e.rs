@@ -439,3 +439,35 @@ fn rejoin_right_after_leave_keeps_its_socket() {
         assert!(a.pid_of(&room).is_some(), "pid file survived");
     }
 }
+
+#[test]
+fn leave_report_counts_message_sent_after_peer_left_as_undelivered() {
+    let (a, b) = (Machine::new(), Machine::new());
+    let room = pair(&a, &b);
+    a.run(&["--room", &room, "wait", "--timeout", "5"]); // peer-joined
+    b.run(&["--room", &room, "leave"]);
+    // no wait for b's daemon to exit: it lingers ~300 ms and must not store/ack in that window
+    assert_eq!(a.run(&["--room", &room, "wait", "--timeout", "5"]).0, 5);
+    let (c, id, _) = a.run(&["--room", &room, "send", "x"]);
+    assert_eq!((c, id.trim()), (0, "h1"));
+    let (c, out, _) = a.run(&["--room", &room, "leave"]);
+    assert_eq!(c, 0);
+    assert!(
+        out.contains("0 delivered-unread") && out.contains("1 undelivered"),
+        "{out}"
+    );
+}
+
+#[test]
+fn message_sent_after_peer_left_is_delivered_once_on_rejoin() {
+    let (a, b) = (Machine::new(), Machine::new());
+    let room = pair(&a, &b);
+    a.run(&["--room", &room, "wait", "--timeout", "5"]);
+    b.run(&["--room", &room, "leave"]);
+    assert_eq!(a.run(&["--room", &room, "wait", "--timeout", "5"]).0, 5);
+    a.run(&["--room", &room, "send", "x"]);
+    assert_eq!(b.run(&["rejoin", &room]).0, 0);
+    let out = b.wait_for(&room, "x\n", 4);
+    assert_eq!(out.matches("id: h1   ").count(), 1, "{out}");
+    assert_eq!(b.run(&["--room", &room, "wait", "--timeout", "1"]).0, 2);
+}
