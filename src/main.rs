@@ -1,6 +1,7 @@
 // Removed in Task 11, once every module is wired up.
 #![allow(dead_code)]
 
+mod daemon;
 mod exit;
 mod frame;
 mod invite;
@@ -84,6 +85,14 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(_cli: Cli) -> anyhow::Result<Exit> {
+fn run(cli: Cli) -> anyhow::Result<Exit> {
+    if let Cmd::Daemon { room_id, mode } = cli.cmd {
+        let mode = daemon::Mode::parse(&mode)?;
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?;
+        rt.block_on(daemon::run(room_id, mode))?;
+        return Ok(Exit::Ok);
+    }
     Err(fail(Exit::Error, "not implemented yet"))
 }

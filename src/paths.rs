@@ -112,6 +112,9 @@ pub fn ticket_path(room: &str) -> Result<PathBuf> {
 pub fn log_path(room: &str) -> Result<PathBuf> {
     Ok(rooms_dir()?.join(format!("{room}.log")))
 }
+pub fn pid_path(room: &str) -> Result<PathBuf> {
+    Ok(rooms_dir()?.join(format!("{room}.pid")))
+}
 pub fn tombstone_path(room: &str) -> Result<PathBuf> {
     Ok(rooms_dir()?.join(format!("{room}.ended")))
 }
