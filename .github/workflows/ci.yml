@@ -12,6 +12,6 @@ jobs:
         with: { components: "rustfmt, clippy" }
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test --all-targets
+      - run: cargo clippy --all-targets --features test-relay -- -D warnings
+      - run: cargo test --all-targets --features test-relay
         env: { WALKIE_TEST_LOCAL: "1" }

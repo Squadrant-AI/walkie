@@ -8,6 +8,7 @@ pub struct Machine {
     pub dir: tempfile::TempDir,
     rooms: std::cell::RefCell<Vec<String>>,
     env: std::cell::RefCell<Vec<(String, String)>>,
+    local: bool,
 }
 
 impl Machine {
@@ -16,14 +17,25 @@ impl Machine {
             dir: tempfile::tempdir().unwrap(),
             rooms: Default::default(),
             env: Default::default(),
+            local: true,
         }
+    }
+    /// A machine that talks through a local test relay instead of loopback-only networking.
+    pub fn with_relay(relay_url: &str) -> Machine {
+        let mut m = Machine::new();
+        m.local = false;
+        m.set_env("WALKIE_TEST_RELAY_URL", relay_url);
+        m
     }
     fn cmd(&self) -> Command {
         let mut c = Command::new(env!("CARGO_BIN_EXE_walkie"));
         c.env("WALKIE_HOME", self.dir.path().join("home"))
             .env("WALKIE_RUNTIME_DIR", self.dir.path().join("rt"))
-            .env("WALKIE_TEST_LOCAL", "1")
-            .env_remove("WALKIE_ROOM");
+            .env_remove("WALKIE_ROOM")
+            .env_remove("WALKIE_TEST_LOCAL");
+        if self.local {
+            c.env("WALKIE_TEST_LOCAL", "1");
+        }
         for (k, v) in self.env.borrow().iter() {
             c.env(k, v);
         }

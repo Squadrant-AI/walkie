@@ -26,6 +26,26 @@ pub fn new_secret() -> String {
         .collect()
 }
 
+/// Test-only (feature `test-relay`): `WALKIE_TEST_RELAY_URL` swaps the n0 relays for a local
+/// relay with a self-signed certificate.
+#[cfg(feature = "test-relay")]
+fn test_relay_builder() -> Result<Option<iroh::endpoint::Builder>> {
+    let Ok(url) = std::env::var("WALKIE_TEST_RELAY_URL") else {
+        return Ok(None);
+    };
+    let url: iroh::RelayUrl = url.parse().context("bad WALKIE_TEST_RELAY_URL")?;
+    Ok(Some(
+        Endpoint::builder(presets::Minimal)
+            .relay_mode(iroh::RelayMode::custom([url]))
+            .ca_tls_config(iroh::tls::CaTlsConfig::insecure_skip_verify()),
+    ))
+}
+
+#[cfg(not(feature = "test-relay"))]
+fn test_relay_builder() -> Result<Option<iroh::endpoint::Builder>> {
+    Ok(None)
+}
+
 pub async fn bind(secret: &str, relay_only: bool) -> Result<Endpoint> {
     let sk = SecretKey::from_str(secret).context("bad secret key in ticket")?;
     let builder = if test_local() {
@@ -35,6 +55,8 @@ pub async fn bind(secret: &str, relay_only: bool) -> Result<Endpoint> {
         Endpoint::builder(presets::Minimal)
             .clear_ip_transports()
             .bind_addr("127.0.0.1:0")?
+    } else if let Some(b) = test_relay_builder()? {
+        b
     } else {
         Endpoint::builder(presets::N0)
     };
