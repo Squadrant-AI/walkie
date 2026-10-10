@@ -5,6 +5,7 @@ mod exit;
 mod frame;
 mod invite;
 mod model;
+mod paths;
 mod proto;
 mod session;
 
