@@ -1,6 +1,6 @@
 # walkie v1 — design
 
-- **Status:** draft r3, revised after a Sonnet review (r1) and an Opus review (r2). Awaiting operator review.
+- **Status:** draft r3.1, revised after a Sonnet review (r1) and two Opus reviews (r2, r3). Awaiting operator review.
 - **Date:** 2026-10-10
 - **One-liner:** walkie-talkie for AI agents. Quick, end-to-end encrypted chat between any two agents, regardless of harness. One binary, no server to run, no API key.
 
@@ -90,12 +90,12 @@ The humans carry the invite. That is deliberate: it keeps a person in the loop a
 | Command | Behaviour |
 |---|---|
 | `walkie open [--ttl 10m] [--idle-ttl 24h] [--relay-only]` | Starts a detached room daemon and probes that a relay is reachable. **Blocks until the invite is printable** (10 s timeout), then prints the room id and the invite. |
-| `walkie join <invite>` | Starts a detached daemon and connects. **Blocks until joined** (30 s timeout), then prints the room id. Retrying with the same invite is idempotent (§6.1). |
+| `walkie join <invite>` | Probes that a relay is reachable (exit `8` on failure), then starts a detached daemon and connects. **Blocks until joined** (30 s timeout), then prints the room id. Retrying with the same invite is idempotent (§6.1). |
 | `walkie send <text> [--reply-to <id>]` | Queues a message and prints its id. Reads stdin when `<text>` is `-`. The body cap is **16 KiB**. Works while a `wait` is running, and while the peer is away (the message is queued). |
 | `walkie wait [--timeout 90] [--json]` | Blocks until messages or events arrive, then prints them (§5.2). |
 | `walkie status [--json]` | Prints: room id, own state, peer state and since when, when the peer last waited, path (`direct` / `relay`), last link drop, unread count, and unacked-outbound count. |
 | `walkie rooms` | Lists this machine's rooms, active (daemon running) and rejoinable (ticket held). Prunes expired tickets. |
-| `walkie leave` | Leaves the room. The peer gets `peer-left` and the room stays alive on their side. The ticket is kept. Prints how many unacked outbound messages were dropped. |
+| `walkie leave` | Leaves the room. The peer gets `peer-left` and the room stays alive on their side. The ticket is kept. Reports how many outbound messages were delivered but are still unread (they are safe with the peer) and how many were undelivered and dropped. |
 | `walkie rejoin [<room>]` | Restarts the daemon from the ticket and reconnects. **Blocks until connected** (30 s timeout). |
 | `walkie end` | Ends the room for both sides. The peer gets `room-ended`, both daemons exit, and both tickets are deleted. |
 
@@ -114,14 +114,14 @@ If none of these resolves, the command exits with code `4` and lists the candida
 | `0` | OK. For `wait`, messages and/or events were printed. |
 | `1` | Generic error. Details are on stderr. |
 | `2` | `wait` timed out with nothing to print. |
-| `3` | The room has ended. This is terminal and confirmed: the peer said `end`, the idle TTL passed, or the invite expired. |
+| `3` | The room has ended. This is terminal. It covers four cases: the peer sent `end`, the idle TTL passed, the invite expired, or `rejoin` found a ticket past its `expires_at` (the ticket is then deleted). |
 | `4` | No such room, or the room is ambiguous. |
 | `5` | The last event in a `wait` batch was `peer-left`. |
-| `6` | `rejoin`: the peer is unreachable right now. This is not proof that the room ended, so retry later. |
+| `6` | `rejoin` or `join`: the peer or host can't be reached right now. That is not proof the room ended, so retry later. |
 | `7` | `join`: the invite is invalid, expired, or already used by someone else. |
 | `8` | The environment can't run walkie: it can't detach a daemon, can't create the socket, or has no network (for example a sandbox). The message names the cause and suggests asking the user to allow it. |
 
-The exit code of `wait` is derived from the batch. Messages are printed first, then events. The **last event** in the batch sets the code: `peer-left` gives `5`, `room-ended` or `invite-expired` gives `3`, and anything else gives `0`. A batch of `peer-left` followed by `peer-rejoined` therefore exits `0`. Because events are acked queue items, each one is reported exactly once.
+The exit code of `wait` is derived from the batch. Messages are printed first, then events. The **last event** in the batch sets the code: `peer-left` gives `5`, `room-ended` or `invite-expired` gives `3`, and anything else gives `0`. A batch of `peer-left` followed by `peer-rejoined` therefore exits `0`. Events are acked queue items, like messages, so each one is reported **at least once**. It can repeat only when a batch is redelivered after a killed `wait`.
 
 ### 5.2 `wait`: delivery and output
 
@@ -197,7 +197,7 @@ This is kept small on purpose: one peer state, five events, and no read receipts
   - fallback `/tmp/walkie-<uid>`
   
   Before use, the directory is `lstat`-checked: it must be owned by us, mode `0700`, and not a symlink. Stale sockets left by a crashed daemon are removed. The daemon checks the caller's UID on every connection (`getpeereid` on macOS, `SO_PEERCRED` on Linux).
-- **Tickets.** Path: `~/.walkie/rooms/<room>.ticket`, mode `0600`, directory `0700`. It is written **once, before the first dial or accept**. It contains:
+- **Tickets.** Path: `~/.walkie/rooms/<room>.ticket`, mode `0600`, directory `0700`. It is **created once, before the first dial or accept**. After that it is updated: when the peer is pinned, and when `expires_at` is refreshed. It contains:
   - this side's endpoint secret key, in plaintext, see §7
   - role (`host` / `joiner`)
   - room id
@@ -232,14 +232,21 @@ This is kept small on purpose: one peer state, five events, and no read receipts
 - **Both daemons always accept connections, but only from the pinned peer id.** Anything else is refused.
 - **Reconnect when the peer is `disconnected`:**
   - Both sides dial (backoff 1 s up to 30 s) and both accept.
-  - When a new connection from the pinned id arrives, keep the **newest** and close the older one with app close code `superseded`.
-  - There are no roles and no races.
+  - When a new connection from the pinned id arrives:
+    - If the existing connection is dead or idle (no traffic or keep-alive within the QUIC idle window), keep the **newest** one.
+    - If both connections are live, which happens when both sides dialed at once, keep the one **dialed by the lower endpoint id**.
+  - Close the loser with the app close code `superseded`. Both sides apply the same rule, so they keep the same connection and nothing loops.
 - **When the peer is `left`:** don't dial. Just accept. The returning side dials via `rejoin`.
 - **Delivery.**
   - Each direction has a monotonic `seq`.
-  - The sender keeps every message in its **outbox until the peer acks it**. The peer acks **only after its local `wait` client has acked**, which is end-to-end (§5.2).
-  - On every (re)connect, both sides exchange `last_acked_seq`. Senders resend everything above it. Receivers drop duplicates by `seq`.
-  - A restarted daemon learns where to continue from the peer, so it never reuses a stale counter.
+  - The receiver sends two kinds of ack.
+    - **`stored`**: sent once the message is in its inbox. It is used only for presence and reporting.
+    - **`read`**: sent only after its local `wait` client has acked the message, so it is end-to-end (§5.2).
+  - The sender keeps every message in its **outbox until it gets the `read` ack**.
+  - On every (re)connect, both sides exchange two numbers per direction:
+    - **`highest_seq_received`**: the highest `seq` the receiver has stored, whether read or not. The sender continues numbering after `max(own highest, highest_seq_received)`, so a restarted sender never reuses a `seq` that the peer still holds unread.
+    - **`last_acked_seq`**: the highest `seq` the receiver's agent has read. The sender resends everything above it that it still holds.
+  - Receivers drop duplicates by `seq`.
 - **Outbox cap.** 1,000 messages or 1 MiB, counting unread messages too. Over the cap, `send` fails with exit `1`.
 - **Crash semantics.** Inbox and outbox live in memory only. If a daemon is killed with `-9`:
   - Messages *it received* are safe. The peer still holds them and resends.
@@ -248,7 +255,7 @@ This is kept small on purpose: one peer state, five events, and no read receipts
 - **Leave.**
   1. The daemon sends `leave`.
   2. It waits up to 2 s for acks.
-  3. It reports how many unacked outbound messages were dropped, then exits. The ticket is kept.
+  3. It reports `N delivered-unread (safe on the peer), M undelivered (dropped)`, then exits. The ticket is kept.
   
   SIGTERM is handled the same way.
 - **The daemon outlives the agent.** A session ending is not a leave. A later session finds the room with `walkie rooms`.
@@ -270,7 +277,7 @@ This is kept small on purpose: one peer state, five events, and no read receipts
 | Another local user | The runtime dir is owner-checked, `0700` and not a symlink, and the daemon checks the caller's UID. |
 | A stolen ticket | It holds this side's endpoint secret key **in plaintext** (`0600`), so stealing it allows rejoining as this side. It lives only until `end`, a confirmed end, or `expires_at` (≤ 24 h idle). Keychain storage is on the roadmap. |
 | Prompt injection from the peer | Nonce-delimited framing, sanitized bodies, a 16 KiB cap, the batch budget, and the skill's hard rules (§8). walkie itself never executes anything. |
-| The peer learns my IP | By default the invite and the direct path reveal endpoint IPs to the peer. `--relay-only` on `open` builds both endpoints with iroh's `clear_ip_transports()` and an invite without IP addresses, so all traffic goes through the relay. **Verify during implementation** that this really yields relay-only. If it doesn't, drop the flag to the roadmap. |
+| The peer learns my IP | By default the invite, the direct path and the N0 address records (pkarr/DNS) all reveal endpoint IPs. `open --relay-only` produces a `walkie1r:` invite that tells **both** sides to go relay-only. Both endpoints call `clear_ip_transports()` and use an address filter so that only the relay URL is published, and the invite contains no IPs. **Verify during implementation** that no IP shows up in the invite, on the wire to the peer, or in the published records. If any does, move the flag to the roadmap. |
 | A tampered binary | Releases ship SHA-256 checksums and GitHub artifact attestations (`gh attestation verify` once the repo is public). minisign is on the roadmap. |
 
 Confidentiality comes entirely from iroh's QUIC encryption. The token only authorizes the join. v1 adds no message-layer cipher, because home-made crypto is a liability.
@@ -405,7 +412,7 @@ What we rejected, and why:
 **Open, to verify during implementation:**
 
 1. Codex CLI and Gemini CLI shell-tool limits and early-yield behaviour. Sources conflict. Confirm that 90 s and wait preemption cover them.
-2. That `clear_ip_transports()` plus an IP-less ticket gives true relay-only mode (§7). If not, `--relay-only` moves to the roadmap.
+2. That `clear_ip_transports()`, a relay-only address filter and an IP-less ticket really keep IPs out of the invite, the peer connection and the published pkarr/DNS records (§7). If not, `--relay-only` moves to the roadmap.
 3. Sandboxes:
    - Codex `workspace-write` has no network, and detached processes inherit seatbelt.
    - Claude Code's sandbox gates Unix sockets.
