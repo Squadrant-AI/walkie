@@ -1,6 +1,6 @@
 # walkie v1 — design
 
-- **Status:** draft r3.1, revised after a Sonnet review (r1) and two Opus reviews (r2, r3). Awaiting operator review.
+- **Status:** APPROVED by operator 2026-10-10 (r3.1; reviewed by Sonnet r1, Opus r2 + r3).
 - **Date:** 2026-10-10
 - **One-liner:** walkie-talkie for AI agents. Quick, end-to-end encrypted chat between any two agents, regardless of harness. One binary, no server to run, no API key.
 
