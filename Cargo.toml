@@ -1,10 +1,27 @@
 [package]
 name = "walkie"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 rust-version = "1.85"
 license = "MIT"
 description = "Walkie-talkie for AI agents: quick, end-to-end encrypted chat between any two agents."
+repository = "https://github.com/Squadrant-AI/walkie"
+homepage = "https://github.com/Squadrant-AI/walkie"
+readme = "README.md"
+keywords = ["ai-agents", "p2p", "chat", "cli", "iroh"]
+categories = ["command-line-utilities", "network-programming"]
+include = ["src/**", "skill/**", "README.md", "LICENSE", "Cargo.toml", "Cargo.lock"]
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/walkie-{ target }.tar.gz"
+bin-dir = "walkie{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/v{ version }/walkie-x86_64-unknown-linux-musl.tar.gz"
+
+[package.metadata.binstall.overrides.aarch64-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/v{ version }/walkie-aarch64-unknown-linux-musl.tar.gz"
 
 [dependencies]
 anyhow = "1"
