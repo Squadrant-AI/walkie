@@ -83,6 +83,15 @@ and leaves stdout untouched. `walkie update` downloads the latest `install.sh` a
 running executable in place (it refuses if that directory is not writable). The check is skipped
 for `wait`, in the background daemon, when `CI` is set, and when `WALKIE_NO_UPDATE_CHECK=1`.
 
+### Other ways to install
+
+```sh
+cargo binstall walkie        # prebuilt release binary
+cargo install walkie --locked # compiles from source
+```
+
+Neither installs the agent skill: run `install.sh` (above) or copy `skill/SKILL.md` into your agent's skills directory.
+
 ## Known limits
 
 - Exactly two participants per room; pull-only (`wait`), no push into a running agent.
