@@ -22,8 +22,15 @@ use tokio::task::JoinHandle;
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const DIAL_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(10);
-/// Deadline for `join` / `rejoin` to connect (spec §5). The CLI waits 2 s longer (preflight D16).
-pub const CONNECT_DEADLINE: Duration = Duration::from_secs(30);
+/// Deadline for `join` / `rejoin` to connect (spec §5), counted from daemon start. The CLI waits
+/// 2 s longer (preflight D16). `WALKIE_TEST_CONNECT_SECS` shortens it for tests.
+pub fn connect_deadline() -> Duration {
+    std::env::var("WALKIE_TEST_CONNECT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .map(Duration::from_secs)
+        .unwrap_or(Duration::from_secs(30))
+}
 const ONLINE_TIMEOUT: Duration = Duration::from_secs(10);
 const LEAVE_WAIT: Duration = Duration::from_secs(2);
 const TERMINAL_EXIT_MAX: Duration = Duration::from_secs(60);
@@ -138,6 +145,8 @@ struct Core {
     env_error: Option<String>,
     leaving: Option<Leaving>,
     last_touch: Instant,
+    started: Instant,
+    sock_path: std::path::PathBuf,
 }
 
 static WAITER_SEQ: AtomicU64 = AtomicU64::new(1);
@@ -155,9 +164,7 @@ pub async fn run(room: String, mode: Mode) -> Result<()> {
     let pid_path = paths::pid_path(&room)?;
     std::fs::write(&pid_path, std::process::id().to_string())?;
     let sock_path = paths::socket_path(&room)?;
-    let result = run_inner(&room, mode, &sock_path).await;
-    let _ = std::fs::remove_file(&sock_path);
-    let _ = std::fs::remove_file(&pid_path);
+    let result = run_inner(&room, mode, &sock_path, &pid_path).await;
     if let Err(e) = &result {
         tracing::error!("daemon failed: {e:#}");
     }
@@ -175,7 +182,12 @@ async fn bind_socket(sock_path: &std::path::Path) -> Result<UnixListener> {
         .map_err(|e| fail(Exit::Environment, format!("cannot create socket: {e}")))
 }
 
-async fn run_inner(room: &str, mode: Mode, sock_path: &std::path::Path) -> Result<()> {
+async fn run_inner(
+    room: &str,
+    mode: Mode,
+    sock_path: &std::path::Path,
+    pid_path: &std::path::Path,
+) -> Result<()> {
     let ticket = Ticket::load(room)?;
     let listener = bind_socket(sock_path).await?;
     let now = SystemTime::now();
@@ -209,9 +221,8 @@ async fn run_inner(room: &str, mode: Mode, sock_path: &std::path::Path) -> Resul
         tokio::spawn(async move {
             let r = async {
                 let ep = net::bind(&secret, relay_only).await?;
-                if mode == Mode::Open {
-                    net::wait_online(&ep, ONLINE_TIMEOUT).await?;
-                }
+                // every mode needs the relay: no network → exit 8 (spec §5, preflight D8)
+                net::wait_online(&ep, ONLINE_TIMEOUT).await?;
                 Ok(ep)
             }
             .await;
@@ -239,6 +250,8 @@ async fn run_inner(room: &str, mode: Mode, sock_path: &std::path::Path) -> Resul
         env_error: None,
         leaving: None,
         last_touch: Instant::now(),
+        started: Instant::now(),
+        sock_path: sock_path.to_path_buf(),
     };
 
     let mut ticker = tokio::time::interval(TICK);
@@ -259,6 +272,11 @@ async fn run_inner(room: &str, mode: Mode, sock_path: &std::path::Path) -> Resul
             break;
         }
     }
+    // Stop being "active" right away (before the slow graceful close), so a `rejoin` that follows
+    // a `leave` never sees a dying daemon. Only the exiting daemon removes these, and only here:
+    // a failed start must not delete a live daemon's socket.
+    let _ = std::fs::remove_file(sock_path);
+    let _ = std::fs::remove_file(pid_path);
     core.shutdown().await;
     Ok(())
 }
@@ -363,13 +381,13 @@ impl Core {
                 return;
             }
         };
-        let my_addr = net::my_addr(&ep);
+        let my_addr = net::my_addr(&ep, self.ticket.relay_only);
         self.ep = Some(ep.clone());
         // accept loop: handshakes run in their own tasks with a timeout (preflight D5)
         {
             let tx = self.tx.clone();
             let auth = self.auth.clone();
-            tokio::spawn(accept_loop(ep, auth, tx));
+            tokio::spawn(accept_loop(ep, auth, self.ticket.relay_only, tx));
         }
         match self.mode {
             Mode::Open => {
@@ -386,10 +404,10 @@ impl Core {
             }
             Mode::Join => {
                 let tok = self.ticket.token.clone();
-                self.spawn_dialer(tok, Some(Instant::now() + CONNECT_DEADLINE));
+                self.spawn_dialer(tok, Some(self.started + connect_deadline()));
             }
             Mode::Rejoin => {
-                self.spawn_dialer(None, Some(Instant::now() + CONNECT_DEADLINE));
+                self.spawn_dialer(None, Some(self.started + connect_deadline()));
             }
         }
     }
@@ -404,8 +422,9 @@ impl Core {
             ticket: self.ticket.peer_addr.clone(),
         };
         let tx = self.tx.clone();
+        let relay_only = self.ticket.relay_only;
         self.dialer = Some(tokio::spawn(async move {
-            let r = dial_loop(ep, peer, token, deadline).await;
+            let r = dial_loop(ep, peer, token, deadline, relay_only).await;
             let _ = tx.send(CoreEvent::DialDone(r));
         }));
     }
@@ -684,6 +703,7 @@ impl Core {
                 self.finish_room();
                 self.session.on_local_end(SystemTime::now());
                 self.exit_at = Some(Instant::now() + Duration::from_millis(300));
+                self.retire_socket();
                 Resp::Ok
             }
         };
@@ -758,6 +778,13 @@ impl Core {
             });
         }
         self.exit_at = Some(Instant::now() + Duration::from_millis(300));
+        self.retire_socket();
+    }
+
+    /// From here on this daemon is no longer "active": an immediate `rejoin` must start a new one.
+    /// (Open connections, such as the one carrying this reply, keep working.)
+    fn retire_socket(&self) {
+        let _ = std::fs::remove_file(&self.sock_path);
     }
 
     /// Exit after a `wait` client acked the terminal event, or after at most 60 s.
@@ -818,6 +845,7 @@ impl Core {
 async fn accept_loop(
     ep: iroh::Endpoint,
     auth: Arc<Mutex<Auth>>,
+    relay_only: bool,
     tx: mpsc::UnboundedSender<CoreEvent>,
 ) {
     while let Some(incoming) = ep.accept().await {
@@ -847,7 +875,7 @@ async fn accept_loop(
                     }
                     ok
                 };
-                net::server_handshake(&conn, &mut check, net::my_addr(&ep)).await
+                net::server_handshake(&conn, &mut check, net::my_addr(&ep, relay_only)).await
             })
             .await;
             match res {
@@ -866,6 +894,7 @@ async fn dial_loop(
     peer: PeerAddr,
     token: Option<String>,
     deadline: Option<Instant>,
+    relay_only: bool,
 ) -> Result<(Link, String)> {
     let mut backoff = 1u64;
     loop {
@@ -873,12 +902,16 @@ async fn dial_loop(
             return Err(fail(Exit::Unreachable, "peer unreachable"));
         }
         let attempt = async {
-            let conn = tokio::time::timeout(DIAL_ATTEMPT_TIMEOUT, net::dial(&ep, &peer))
+            let mut limit = DIAL_ATTEMPT_TIMEOUT;
+            if let Some(d) = deadline {
+                limit = limit.min(d.saturating_duration_since(Instant::now()));
+            }
+            let conn = tokio::time::timeout(limit, net::dial(&ep, &peer))
                 .await
                 .map_err(|_| anyhow::anyhow!("dial timed out"))??;
             tokio::time::timeout(
                 HANDSHAKE_TIMEOUT,
-                net::client_handshake(&conn, token.clone(), net::my_addr(&ep)),
+                net::client_handshake(&conn, token.clone(), net::my_addr(&ep, relay_only)),
             )
             .await
             .map_err(|_| anyhow::anyhow!("handshake timed out"))?

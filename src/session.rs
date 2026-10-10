@@ -210,7 +210,10 @@ impl Session {
         let prev = self.peer;
         self.set_peer(PeerState::Connected { path }, now);
         match prev {
-            PeerState::NotJoined => self.push_event(EventKind::PeerJoined, now),
+            // only the host is told someone joined (spec §5.3)
+            PeerState::NotJoined if self.role == Role::Host => {
+                self.push_event(EventKind::PeerJoined, now)
+            }
             PeerState::Left => self.push_event(EventKind::PeerRejoined, now),
             _ => {}
         }
@@ -606,6 +609,14 @@ mod tests {
         );
         assert!(h.last_link_drop.is_some());
         assert_eq!(h.peer, PeerState::Ended);
+    }
+
+    #[test]
+    fn joiner_gets_no_peer_joined_event() {
+        // preflight D22
+        let mut j = Session::new(Role::Joiner, PeerState::NotJoined, now());
+        j.on_connected(Path::Direct, now());
+        assert!(j.take_batch().is_none());
     }
 
     #[test]

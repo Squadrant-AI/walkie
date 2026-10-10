@@ -16,7 +16,9 @@ use std::time::{Duration, SystemTime};
 /// The daemon's own deadlines are 10 s (open) and 30 s (join / rejoin); the CLI waits 2 s longer
 /// so the daemon reports `env_error` / `unreachable` before the CLI gives up (preflight D16).
 const OPEN_WAIT: Duration = Duration::from_secs(12);
-const CONNECT_WAIT: Duration = Duration::from_secs(32);
+fn connect_wait() -> Duration {
+    crate::daemon::connect_deadline() + Duration::from_secs(2)
+}
 
 pub fn choose(explicit: Option<String>, active: &[String]) -> Result<String> {
     if let Some(r) = explicit {
@@ -78,6 +80,8 @@ fn check(r: Resp) -> Result<Resp> {
 
 /// Re-executes this binary as a detached daemon. Returns its pid.
 fn spawn_daemon(room: &str, mode: &str) -> Result<u32> {
+    // fail fast (exit 8) on an unsafe or unusable runtime dir instead of timing out later
+    paths::socket_path(room)?;
     let env_err = |what: &str, e: &dyn std::fmt::Display| {
         fail(
             Exit::Environment,
@@ -224,7 +228,7 @@ pub async fn join(invite_str: &str) -> Result<Exit> {
 }
 
 async fn connect_outcome(room: &str, pid: u32, verb: &str) -> Result<Exit> {
-    let out = poll_info(room, CONNECT_WAIT, |r| match r {
+    let out = poll_info(room, connect_wait(), |r| match r {
         Resp::Info {
             peer: PeerState::Connected { .. },
             ..
@@ -296,6 +300,10 @@ pub async fn wait(room: Option<String>, timeout: u64, json: bool) -> Result<Exit
                 let mut so = std::io::stdout().lock();
                 so.write_all(out.as_bytes())?;
                 so.flush()?;
+            }
+            // test-only: simulate a harness killing the tool right after the print
+            if cfg!(debug_assertions) && std::env::var("WALKIE_TEST_SKIP_ACK").is_ok() {
+                return Ok(exit_for(&items));
             }
             // only now does the daemon tell the peer the messages were read
             check(c.call(&Req::AckBatch { batch_id }).await?)?;

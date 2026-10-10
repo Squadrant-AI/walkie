@@ -53,12 +53,29 @@ impl Machine {
         false
     }
     pub fn run(&self, args: &[&str]) -> (i32, String, String) {
-        let o = self.cmd().args(args).output().unwrap();
+        self.run_with(args, &[])
+    }
+    pub fn run_with(&self, args: &[&str], envs: &[(&str, &str)]) -> (i32, String, String) {
+        let o = self
+            .cmd()
+            .args(args)
+            .envs(envs.iter().copied())
+            .output()
+            .unwrap();
         (
             o.status.code().unwrap_or(-1),
             String::from_utf8_lossy(&o.stdout).into(),
             String::from_utf8_lossy(&o.stderr).into(),
         )
+    }
+    /// Starts a command without waiting (stdout/stderr piped); use `wait_with_output`.
+    pub fn spawn(&self, args: &[&str]) -> std::process::Child {
+        self.cmd()
+            .args(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap()
     }
     pub fn run_stdin(&self, args: &[&str], input: &str) -> (i32, String, String) {
         let mut ch = self
@@ -119,6 +136,22 @@ impl Drop for Machine {
         for r in self.rooms.borrow().iter() {
             let _ = self.cmd().args(["--room", r, "end"]).output();
         }
+        // whatever is left (killed CLIs, failed joins, rejoins that gave up): kill this
+        // machine's daemons by pid file, never by name (the other machine shares room ids)
+        for e in std::fs::read_dir(self.dir.path().join("home/rooms"))
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            if e.path().extension().is_some_and(|x| x == "pid") {
+                if let Some(pid) = std::fs::read_to_string(e.path())
+                    .ok()
+                    .and_then(|s| s.trim().parse::<i32>().ok())
+                {
+                    unsafe { libc_kill(pid, 9) };
+                }
+            }
+        }
     }
 }
 
@@ -145,4 +178,12 @@ pub fn pair(host: &Machine, guest: &Machine) -> String {
     assert_eq!(c, 0, "join failed: {err}");
     guest.track(&room);
     room
+}
+
+pub fn out_of(o: std::process::Output) -> (i32, String, String) {
+    (
+        o.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&o.stdout).into(),
+        String::from_utf8_lossy(&o.stderr).into(),
+    )
 }

@@ -69,8 +69,14 @@ pub async fn wait_online(ep: &Endpoint, timeout: Duration) -> Result<()> {
     Ok(())
 }
 
-pub fn my_addr(ep: &Endpoint) -> String {
-    EndpointTicket::new(ep.addr()).to_string()
+/// Our address as an `EndpointTicket` string. In relay-only mode every IP address is stripped,
+/// so neither the invite nor the Hello/Welcome `addr` can leak one (spec §7, preflight D12).
+pub fn my_addr(ep: &Endpoint, relay_only: bool) -> String {
+    let mut addr = ep.addr();
+    if relay_only {
+        addr.addrs.retain(|a| a.is_relay());
+    }
+    EndpointTicket::new(addr).to_string()
 }
 
 pub struct PeerAddr {
@@ -222,12 +228,12 @@ mod tests {
         std::env::set_var("WALKIE_TEST_LOCAL", "1");
         let a = bind(&new_secret(), false).await.unwrap();
         let b = bind(&new_secret(), false).await.unwrap();
-        let a_addr = my_addr(&a);
+        let a_addr = my_addr(&a, false);
         let token = "abc";
         let server = tokio::spawn(async move {
             let conn = accept(&a).await.unwrap();
             let mut auth = |_id: &str, t: Option<&str>| t == Some(token);
-            let (mut link, peer_addr) = server_handshake(&conn, &mut auth, my_addr(&a))
+            let (mut link, peer_addr) = server_handshake(&conn, &mut auth, my_addr(&a, false))
                 .await
                 .unwrap();
             assert!(peer_addr.starts_with("endpoint"));
@@ -243,7 +249,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let (mut link, _) = client_handshake(&conn, Some(token.into()), my_addr(&b))
+        let (mut link, _) = client_handshake(&conn, Some(token.into()), my_addr(&b, false))
             .await
             .unwrap();
         write_frame(&mut link.send, &Wire::Waiting).await.unwrap();
@@ -255,11 +261,11 @@ mod tests {
         std::env::set_var("WALKIE_TEST_LOCAL", "1");
         let a = bind(&new_secret(), false).await.unwrap();
         let b = bind(&new_secret(), false).await.unwrap();
-        let a_addr = my_addr(&a);
+        let a_addr = my_addr(&a, false);
         tokio::spawn(async move {
             let conn = accept(&a).await.unwrap();
             let mut auth = |_: &str, _: Option<&str>| false;
-            let _ = server_handshake(&conn, &mut auth, my_addr(&a)).await;
+            let _ = server_handshake(&conn, &mut auth, my_addr(&a, false)).await;
         });
         let conn = dial(
             &b,
@@ -270,9 +276,92 @@ mod tests {
         )
         .await
         .unwrap();
-        let e = client_handshake(&conn, Some("nope".into()), my_addr(&b))
+        let e = client_handshake(&conn, Some("nope".into()), my_addr(&b, false))
             .await
             .unwrap_err();
         assert_eq!(crate::exit::exit_of(&e), crate::exit::Exit::BadInvite);
+    }
+
+    async fn local(name_secret: &str) -> Endpoint {
+        std::env::set_var("WALKIE_TEST_LOCAL", "1");
+        bind(name_secret, false).await.unwrap()
+    }
+
+    fn peer_of(ep: &Endpoint) -> PeerAddr {
+        PeerAddr {
+            id: None,
+            ticket: Some(my_addr(ep, false)),
+        }
+    }
+
+    #[tokio::test]
+    async fn simultaneous_dial_leaves_exactly_one_link_both_sides_agree() {
+        // spec §6.2 / §10: both sides dial at once; each applies the same rule to the two
+        // connections it holds and must keep the same one (dialed by the lower id).
+        let a = local(&new_secret()).await;
+        let b = local(&new_secret()).await;
+        let (pa, pb) = (peer_of(&a), peer_of(&b));
+        let acc = |ep: Endpoint| async move { accept(&ep).await.unwrap() };
+        let ((a_dialed, b_acc), (b_dialed, a_acc)) = tokio::join!(
+            async { tokio::join!(async { dial(&a, &pb).await.unwrap() }, acc(b.clone())) },
+            async { tokio::join!(async { dial(&b, &pa).await.unwrap() }, acc(a.clone())) },
+        );
+        let (a_id, b_id) = (a.id().to_string(), b.id().to_string());
+        // side A: current = what it dialed (dialer a), new = what it accepted (dialer b)
+        let a_keeps_own = keep(&a_id, &b_id);
+        // side B: current = what it dialed (dialer b), new = what it accepted (dialer a)
+        let b_keeps_own = keep(&b_id, &a_id);
+        assert_ne!(
+            a_keeps_own, b_keeps_own,
+            "exactly one side's own dial survives"
+        );
+        // the survivor is the connection dialed by the lower id, seen from both ends
+        let (dialer_conn, acceptor_conn) = if a_id < b_id {
+            (a_dialed, b_acc)
+        } else {
+            (b_dialed, a_acc)
+        };
+        let (mut tx, _rx) = dialer_conn.open_bi().await.unwrap();
+        write_frame(&mut tx, &Wire::Waiting).await.unwrap();
+        let (_tx2, mut rx2) = acceptor_conn.accept_bi().await.unwrap();
+        assert_eq!(read_frame(&mut rx2).await.unwrap(), Wire::Waiting);
+    }
+
+    #[tokio::test]
+    async fn unpinned_key_is_refused_pinned_key_is_welcome() {
+        use crate::daemon::authorize;
+        use crate::model::Role;
+        let host = local(&new_secret()).await;
+        let friend = local(&new_secret()).await;
+        let stranger = local(&new_secret()).await;
+        let pinned = friend.id().to_string();
+        let host_addr = peer_of(&host);
+        let h = host.clone();
+        tokio::spawn(async move {
+            let mut keep_alive = vec![];
+            for _ in 0..2 {
+                let conn = accept(&h).await.unwrap();
+                let pinned = pinned.clone();
+                let mut auth = move |remote: &str, tok: Option<&str>| {
+                    authorize(Role::Host, Some(&pinned), None, None, 0, remote, tok)
+                };
+                keep_alive.push(
+                    server_handshake(&conn, &mut auth, my_addr(&h, false))
+                        .await
+                        .ok(),
+                );
+            }
+            // dropping a Link closes its connection; let the client finish first
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        });
+        let c = dial(&stranger, &host_addr).await.unwrap();
+        let e = client_handshake(&c, Some("x".into()), my_addr(&stranger, false))
+            .await
+            .unwrap_err();
+        assert_eq!(crate::exit::exit_of(&e), crate::exit::Exit::BadInvite);
+        let c = dial(&friend, &host_addr).await.unwrap();
+        client_handshake(&c, None, my_addr(&friend, false))
+            .await
+            .expect("the pinned key reconnects without a token");
     }
 }

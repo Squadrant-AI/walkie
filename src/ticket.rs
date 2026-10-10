@@ -75,7 +75,11 @@ pub fn list_live(now: u64) -> Vec<Ticket> {
         };
         match Ticket::load(room) {
             Ok(t) if !t.is_expired(now) => out.push(t),
-            _ => Ticket::delete(room),
+            _ => {
+                // pruned: remember it so a later `rejoin` says "ended" (exit 3), not "no room"
+                mark_ended(room);
+                Ticket::delete(room);
+            }
         }
     }
     out.sort_by(|a, b| a.room.cmp(&b.room));
