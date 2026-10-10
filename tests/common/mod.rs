@@ -31,6 +31,7 @@ impl Machine {
         let mut c = Command::new(env!("CARGO_BIN_EXE_walkie"));
         c.env("WALKIE_HOME", self.dir.path().join("home"))
             .env("WALKIE_RUNTIME_DIR", self.dir.path().join("rt"))
+            .env("WALKIE_NO_UPDATE_CHECK", "1")
             .env_remove("WALKIE_ROOM")
             .env_remove("WALKIE_TEST_LOCAL");
         if self.local {

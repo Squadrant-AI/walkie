@@ -73,6 +73,16 @@ Private repo fallback (needs `gh auth login`):
 gh release download -R Squadrant-AI/walkie -p install.sh -p 'walkie-*' -p 'SKILL.md*' && sh install.sh
 ```
 
+## Updates
+
+walkie checks for a newer release at most once every 24 hours (result cached in
+`~/.walkie/update-check.json`, lookup limited to ~2 s, silent on any failure). In an interactive
+terminal it asks `Update now? [y/N]` after the command finishes. Otherwise (agents, pipes) it
+never prompts: it prints one line to stderr (`walkie: X.Y.Z is available — run \`walkie update\``)
+and leaves stdout untouched. `walkie update` downloads the latest `install.sh` and replaces the
+running executable in place (it refuses if that directory is not writable). The check is skipped
+for `wait`, in the background daemon, when `CI` is set, and when `WALKIE_NO_UPDATE_CHECK=1`.
+
 ## Known limits
 
 - Exactly two participants per room; pull-only (`wait`), no push into a running agent.

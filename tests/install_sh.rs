@@ -258,3 +258,62 @@ fn gh_installed_but_not_logged_in_warns_and_installs() {
     assert!(String::from_utf8_lossy(&o.stderr).contains("not logged in"));
     assert!(t.path().join("out/walkie").exists());
 }
+
+#[test]
+fn walkie_update_replaces_its_own_executable_from_a_local_release() {
+    let t = tempfile::tempdir().unwrap();
+    let rel = t.path().join("rel");
+    std::fs::create_dir_all(&rel).unwrap();
+    fake_release(&rel);
+    std::fs::copy(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/install.sh"),
+        rel.join("install.sh"),
+    )
+    .unwrap();
+    // an installed walkie in a writable dir: a copy of the real binary
+    let bin_dir = t.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let exe = bin_dir.join("walkie");
+    std::fs::copy(env!("CARGO_BIN_EXE_walkie"), &exe).unwrap();
+    // minimal PATH without gh, as in run_install_env
+    let fakebin = t.path().join("fakebin");
+    std::fs::create_dir_all(&fakebin).unwrap();
+    for tool in [
+        "sh",
+        "cut",
+        "shasum",
+        "sha256sum",
+        "tar",
+        "install",
+        "mkdir",
+        "mktemp",
+        "cp",
+        "mv",
+        "rm",
+        "uname",
+        "curl",
+        "cat",
+        "gzip",
+        "cmp",
+    ] {
+        if let Ok(p) = which(tool) {
+            let _ = std::os::unix::fs::symlink(p, fakebin.join(tool));
+        }
+    }
+    let o = Command::new(&exe)
+        .arg("update")
+        .current_dir(t.path())
+        .env_clear()
+        .env("PATH", &fakebin)
+        .env("HOME", t.path())
+        .env("TMPDIR", t.path())
+        .env("WALKIE_TARGET", TARGET)
+        .env("WALKIE_NO_SKILL", "1")
+        .env("WALKIE_UPDATE_BASE", format!("file://{}", rel.display()))
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let run = Command::new(&exe).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "fake walkie");
+    assert!(String::from_utf8_lossy(&o.stdout).contains("walkie updated"));
+}

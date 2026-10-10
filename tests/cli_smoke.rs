@@ -9,7 +9,7 @@ fn help_lists_all_commands() {
         .success();
     let s = String::from_utf8(out.get_output().stdout.clone()).unwrap();
     for c in [
-        "open", "join", "send", "wait", "status", "rooms", "leave", "rejoin", "end",
+        "open", "join", "send", "wait", "status", "rooms", "leave", "rejoin", "end", "update",
     ] {
         assert!(s.contains(c), "missing {c}");
     }

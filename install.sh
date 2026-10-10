@@ -8,7 +8,7 @@
 # It also installs the agent skill (SKILL.md, checksum-verified) for each agent found:
 #   Claude Code (~/.claude), opencode (~/.config/opencode), Codex (~/.codex).
 # Env: WALKIE_INSTALL_DIR (binary dir, default ~/.local/bin), WALKIE_NO_SKILL=1 (skip skills),
-#      WALKIE_TARGET, WALKIE_REPO.
+#      WALKIE_TARGET, WALKIE_REPO, WALKIE_BASE_URL (download base; used by `walkie update` and tests).
 set -eu
 REPO="${WALKIE_REPO:-Squadrant-AI/walkie}"
 
@@ -29,7 +29,7 @@ dir="${WALKIE_INSTALL_DIR:-$HOME/.local/bin}"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-base="https://github.com/$REPO/releases/latest/download"
+base="${WALKIE_BASE_URL:-https://github.com/$REPO/releases/latest/download}"
 
 # fetch <asset> <dest>...: local file in cwd, else curl (public), else gh (private).
 # Fetches every asset listed as "asset:dest"; returns non-zero if any is unavailable.
