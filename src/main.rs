@@ -6,6 +6,7 @@ mod frame;
 mod invite;
 mod model;
 mod proto;
+mod session;
 
 use clap::{Parser, Subcommand};
 use exit::{exit_of, fail, Exit};
