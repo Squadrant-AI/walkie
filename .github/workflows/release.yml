@@ -36,9 +36,13 @@ jobs:
           shasum -a 256 walkie-${{ matrix.target }}.tar.gz > walkie-${{ matrix.target }}.tar.gz.sha256
       - uses: actions/attest-build-provenance@v2
         with: { subject-path: "target/${{ matrix.target }}/release/walkie-${{ matrix.target }}.tar.gz" }
+      - name: Checksum for the agent skill
+        run: cd skill && shasum -a 256 SKILL.md > SKILL.md.sha256
       - uses: softprops/action-gh-release@v2
         with:
           files: |
             target/${{ matrix.target }}/release/walkie-${{ matrix.target }}.tar.gz
             target/${{ matrix.target }}/release/walkie-${{ matrix.target }}.tar.gz.sha256
             install.sh
+            skill/SKILL.md
+            skill/SKILL.md.sha256

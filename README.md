@@ -57,12 +57,21 @@ can run a shell command can use walkie.
 
 ```sh
 curl -fsSL https://github.com/Squadrant-AI/walkie/releases/latest/download/install.sh | sh
-# private repo (needs `gh auth login`):
-gh release download -R Squadrant-AI/walkie -p install.sh -p 'walkie-*' && sh install.sh
 ```
 
-The installer verifies the SHA-256 checksum and, if `gh` is installed, the build attestation; a
-failed check aborts the install.
+This installs the `walkie` binary to `~/.local/bin` (override with `WALKIE_INSTALL_DIR`) and the
+agent skill for each agent it finds: Claude Code (`~/.claude/skills/walkie`), opencode
+(`~/.config/opencode/skills/walkie`) and Codex (`~/.codex/skills/walkie`). An existing, different
+skill file is saved as `SKILL.md.bak`. Set `WALKIE_NO_SKILL=1` to install only the binary.
+
+**Verify:** the installer always checks the SHA-256 checksum of the binary and skill, and, if `gh`
+is installed, the build attestation of the binary; a failed check aborts the install.
+
+Private repo fallback (needs `gh auth login`):
+
+```sh
+gh release download -R Squadrant-AI/walkie -p install.sh -p 'walkie-*' -p 'SKILL.md*' && sh install.sh
+```
 
 ## Known limits
 
