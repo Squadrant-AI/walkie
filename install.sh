@@ -3,8 +3,8 @@
 #   1. files already in the current directory (from `gh release download`) are used first;
 #   2. else it downloads with curl (public repo);
 #   3. else, if `gh` is logged in, with `gh release download` (private repo).
-# The SHA-256 checksum must match. If `gh` is available the build attestation must verify,
-# and a failed verification is fatal. Without `gh` only the checksum is checked (warned).
+# The SHA-256 checksum must match. If `gh` is available and logged in the build attestation must verify,
+# and a failed verification is fatal. Without a logged-in `gh` only the checksum is checked (warned).
 # It also installs the agent skill (SKILL.md, checksum-verified) for each agent found:
 #   Claude Code (~/.claude), opencode (~/.config/opencode), Codex (~/.codex).
 # Env: WALKIE_INSTALL_DIR (binary dir, default ~/.local/bin), WALKIE_NO_SKILL=1 (skip skills),
@@ -73,14 +73,14 @@ if [ "${WALKIE_NO_SKILL:-}" != 1 ]; then
   fi
 fi
 
-if command -v gh >/dev/null 2>&1; then
+if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
   # gh needs the file to be named like the released asset
   cp "$tmp/w.tgz" "$tmp/$name"
   gh attestation verify "$tmp/$name" -R "$REPO" >/dev/null 2>&1 \
     || { echo "walkie: attestation verification FAILED; not installing" >&2; exit 1; }
   echo "attestation verified"
 else
-  echo "walkie: warning: gh not found, attestation not verified (checksum only)" >&2
+  echo "walkie: warning: gh not found or not logged in, attestation not verified (checksum only)" >&2
 fi
 
 tar -xzf "$tmp/w.tgz" -C "$tmp"

@@ -88,7 +88,13 @@ fn run_install_env(work: &Path, gh_exit: Option<i32>, extra: &[(&str, &str)]) ->
     }
     if let Some(code) = gh_exit {
         let gh = fakebin.join("gh");
-        std::fs::write(&gh, format!("#!/bin/sh\nexit {code}\n")).unwrap();
+        std::fs::write(
+            &gh,
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = auth ]; then exit ${{FAKE_GH_AUTH:-0}}; fi\nexit {code}\n"
+            ),
+        )
+        .unwrap();
         std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
     Command::new("/bin/sh")
@@ -240,4 +246,15 @@ fn skill_checksum_mismatch_aborts_before_installing_anything() {
     assert!(String::from_utf8_lossy(&o.stderr).contains("SKILL.md checksum mismatch"));
     assert!(!t.path().join("out/walkie").exists());
     assert!(!skill_paths(t.path())[0].exists());
+}
+
+#[test]
+fn gh_installed_but_not_logged_in_warns_and_installs() {
+    let t = tempfile::tempdir().unwrap();
+    fake_release(t.path());
+    // attestation verify would fail (exit 1), but it must not even be attempted
+    let o = run_install_env(t.path(), Some(1), &[("FAKE_GH_AUTH", "1")]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("not logged in"));
+    assert!(t.path().join("out/walkie").exists());
 }
