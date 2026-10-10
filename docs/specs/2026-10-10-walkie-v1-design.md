@@ -118,7 +118,7 @@ If none of these resolves, the command exits with code `4` and lists the candida
 | `4` | No such room, or the room is ambiguous. |
 | `5` | The last event in a `wait` batch was `peer-left`. |
 | `6` | `rejoin` or `join`: the peer or host can't be reached right now. That is not proof the room ended, so retry later. |
-| `7` | `join`: the invite is invalid, expired, or already used by someone else. |
+| `7` | `join`: the host answered and refused: the invite is invalid, expired, or already used. If the host daemon is already gone (for example it exited after the invite expired), the joiner cannot tell why it is unreachable, so it gets `6`. |
 | `8` | The environment can't run walkie: it can't detach a daemon, can't create the socket, or has no network (for example a sandbox). The message names the cause and suggests asking the user to allow it. |
 
 The exit code of `wait` is derived from the batch. Messages are printed first, then events. The **last event** in the batch sets the code: `peer-left` gives `5`, `room-ended` or `invite-expired` gives `3`, and anything else gives `0`. A batch of `peer-left` followed by `peer-rejoined` therefore exits `0`. Events are acked queue items, like messages, so each one is reported **at least once**. It can repeat only when a batch is redelivered after a killed `wait`.
@@ -263,7 +263,7 @@ This is kept small on purpose: one peer state, five events, and no read receipts
   - `end` by either side.
   - Or a daemon with no connected peer for `--idle-ttl` (default **24 h**). It emits `room-ended`, deletes its ticket and exits.
   
-  A side that is away learns of the end on its next `rejoin` if the peer is still around to say so. Otherwise its ticket expires on its own through `expires_at`. In that case `rejoin` exits `6`, not `3`, until the ticket expires.
+  The side that ran `end` (or whose ticket was pruned) leaves a 24 h tombstone, so its own `rejoin` exits `3`. A side that was away learns of the end only if the peer is still around to say so; otherwise it cannot tell the room ended and `rejoin` exits `6` until its ticket expires, after which it exits `3`.
 
 ## 7. Security model
 
@@ -296,7 +296,11 @@ walkie ships one harness-neutral `SKILL.md`, plus install notes for common harne
   - `send`, then `wait`. On a timeout, `wait` again.
   - After **10 consecutive empty timeouts** (about 15 minutes), ask the user whether to keep waiting.
   - `status` shows whether the peer is even listening (`peer last waited`).
-- **Results.**
+- **Results.** The skill lists every exit code:
+  - `0`: OK. `1`: error (details on stderr; for `send`, also a full outbox or an oversize message).
+  - `2`: `wait` timed out with nothing to print. `wait` again.
+  - `4`: no such room, or several candidates: pass `--room` or set `WALKIE_ROOM`.
+  - `7`: `join` was refused: the invite is invalid, expired, or already used. Ask the user for a fresh invite.
   - `5`: the peer left. Tell the user, then either keep waiting for a rejoin or `leave`.
   - `3`: the room has ended. Stop.
   - `6` on `rejoin`: the peer is unreachable. Retry later or tell the user.
@@ -364,8 +368,9 @@ This is how a received message reaches the agent. **v1 ships tier 5 only.** High
   - Both sides dial at once after a drop: exactly one connection survives.
   - An unpinned key is refused.
   - A wrong token is refused and the invite stays usable.
-  - A used or expired invite exits `7`.
-  - After `end`, `rejoin` exits `3` and the tickets are gone.
+  - A used invite, or an expired one while the host daemon is still up, exits `7`. With the host daemon gone, `join` exits `6`.
+  - After `end`, the ending side's `rejoin` exits `3` and its ticket is gone. The away side's `rejoin` exits `6` (it cannot learn of the end).
+  - Pruning an expired ticket (`rooms`) leaves a tombstone, so `rejoin` then exits `3`.
   - With the peer offline, `rejoin` exits `6`.
   - Idle-TTL expiry and ticket pruning.
   - `send` while `wait` is running.

@@ -1,0 +1,41 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: "rustfmt, clippy" }
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --features test-relay -- -D warnings
+      - run: cargo test --all-targets --features test-relay
+        env: { WALKIE_TEST_LOCAL: "1" }
+  # The same targets the release workflow ships, built exactly like it (no test-relay).
+  release-build:
+    strategy:
+      matrix:
+        include:
+          - { os: macos-14, target: aarch64-apple-darwin }
+          - { os: macos-14, target: x86_64-apple-darwin }
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-musl }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: "${{ matrix.target }}" }
+      - uses: Swatinem/rust-cache@v2
+      - if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: sh scripts/check-release-build.sh
+      - run: cargo build --release --target ${{ matrix.target }}
+      - name: release binary must not contain the test relay hook
+        run: |
+          if grep -aq WALKIE_TEST_RELAY_URL target/${{ matrix.target }}/release/walkie; then
+            echo "built with test-relay"; exit 1
+          fi
