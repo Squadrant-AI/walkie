@@ -10,6 +10,7 @@ mod paths;
 mod proto;
 mod session;
 mod ticket;
+mod update;
 
 use clap::{Parser, Subcommand};
 use exit::{exit_of, Exit};
@@ -64,6 +65,8 @@ enum Cmd {
     Rejoin { room_id: Option<String> },
     /// End the room for both sides
     End,
+    /// Update walkie to the latest release
+    Update,
     #[command(name = "__daemon", hide = true)]
     Daemon {
         room_id: String,
@@ -74,13 +77,17 @@ enum Cmd {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    match run(cli) {
+    // the update check never runs in the daemon, during `wait`, or inside `update` itself
+    let skip_check = matches!(cli.cmd, Cmd::Daemon { .. } | Cmd::Wait { .. } | Cmd::Update);
+    let code = match run(cli) {
         Ok(code) => ExitCode::from(code.code()),
         Err(e) => {
             eprintln!("walkie: {e:#}");
             ExitCode::from(exit_of(&e).code())
         }
-    }
+    };
+    update::maybe_notify(skip_check);
+    code
 }
 
 fn run(cli: Cli) -> anyhow::Result<Exit> {
@@ -114,6 +121,7 @@ fn run(cli: Cli) -> anyhow::Result<Exit> {
             Cmd::Leave => cli::leave(room).await,
             Cmd::Rejoin { room_id } => cli::rejoin(room, room_id).await,
             Cmd::End => cli::end(room).await,
+            Cmd::Update => update::run(),
             Cmd::Daemon { .. } => unreachable!("handled above"),
         }
     })

@@ -42,8 +42,25 @@ fn fake_release(dir: &Path) {
     .unwrap();
 }
 
+const SKILL: &str = "---\nname: walkie\n---\nfake skill\n";
+
+/// Adds SKILL.md and its .sha256 to a fake release directory.
+fn fake_skill(dir: &Path) {
+    let f = dir.join("SKILL.md");
+    std::fs::write(&f, SKILL).unwrap();
+    std::fs::write(
+        dir.join("SKILL.md.sha256"),
+        format!("{}  SKILL.md\n", sha256(&f)),
+    )
+    .unwrap();
+}
+
 /// PATH with only the basics, optionally plus a fake `gh` that fails or succeeds.
 fn run_install(work: &Path, gh_exit: Option<i32>) -> Output {
+    run_install_env(work, gh_exit, &[])
+}
+
+fn run_install_env(work: &Path, gh_exit: Option<i32>, extra: &[(&str, &str)]) -> Output {
     let fakebin = work.join("fakebin");
     std::fs::create_dir_all(&fakebin).unwrap();
     // minimal PATH: symlink only the tools install.sh needs, so a real `gh` is never found
@@ -63,6 +80,7 @@ fn run_install(work: &Path, gh_exit: Option<i32>) -> Output {
         "curl",
         "cat",
         "gzip",
+        "cmp",
     ] {
         if let Ok(p) = which(tool) {
             let _ = std::os::unix::fs::symlink(p, fakebin.join(tool));
@@ -70,7 +88,13 @@ fn run_install(work: &Path, gh_exit: Option<i32>) -> Output {
     }
     if let Some(code) = gh_exit {
         let gh = fakebin.join("gh");
-        std::fs::write(&gh, format!("#!/bin/sh\nexit {code}\n")).unwrap();
+        std::fs::write(
+            &gh,
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = auth ]; then exit ${{FAKE_GH_AUTH:-0}}; fi\nexit {code}\n"
+            ),
+        )
+        .unwrap();
         std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
     Command::new("/bin/sh")
@@ -82,6 +106,7 @@ fn run_install(work: &Path, gh_exit: Option<i32>) -> Output {
         .env("TMPDIR", work)
         .env("WALKIE_TARGET", TARGET)
         .env("WALKIE_INSTALL_DIR", work.join("out"))
+        .envs(extra.iter().copied())
         .output()
         .unwrap()
 }
@@ -141,4 +166,154 @@ fn without_gh_it_warns_and_installs_after_the_checksum() {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert!(String::from_utf8_lossy(&o.stderr).contains("attestation not verified"));
     assert!(t.path().join("out/walkie").exists());
+}
+
+fn skill_paths(home: &Path) -> [std::path::PathBuf; 3] {
+    [
+        home.join(".claude/skills/walkie/SKILL.md"),
+        home.join(".config/opencode/skills/walkie/SKILL.md"),
+        home.join(".codex/skills/walkie/SKILL.md"),
+    ]
+}
+
+#[test]
+fn installs_the_skill_for_each_detected_agent_only() {
+    let t = tempfile::tempdir().unwrap();
+    fake_release(t.path());
+    fake_skill(t.path());
+    std::fs::create_dir_all(t.path().join(".claude")).unwrap();
+    std::fs::create_dir_all(t.path().join(".config/opencode")).unwrap();
+    let o = run_install(t.path(), None);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let [claude, opencode, codex] = skill_paths(t.path());
+    assert_eq!(std::fs::read_to_string(claude).unwrap(), SKILL);
+    assert_eq!(std::fs::read_to_string(opencode).unwrap(), SKILL);
+    assert!(!codex.exists(), "no ~/.codex, so no Codex skill");
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.contains("skill (Claude Code): installed"), "{out}");
+    assert!(out.contains("skill (opencode): installed"), "{out}");
+}
+
+#[test]
+fn an_existing_different_skill_is_backed_up_not_clobbered_silently() {
+    let t = tempfile::tempdir().unwrap();
+    fake_release(t.path());
+    fake_skill(t.path());
+    let dir = t.path().join(".claude/skills/walkie");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("SKILL.md"), "old").unwrap();
+    let o = run_install(t.path(), None);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(
+        std::fs::read_to_string(dir.join("SKILL.md.bak")).unwrap(),
+        "old"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("SKILL.md")).unwrap(),
+        SKILL
+    );
+    assert!(String::from_utf8_lossy(&o.stdout).contains("SKILL.md.bak"));
+    // second run: identical, nothing rewritten
+    let o = run_install(t.path(), None);
+    assert!(String::from_utf8_lossy(&o.stdout).contains("already up to date"));
+}
+
+#[test]
+fn walkie_no_skill_skips_the_skill() {
+    let t = tempfile::tempdir().unwrap();
+    fake_release(t.path());
+    fake_skill(t.path());
+    std::fs::create_dir_all(t.path().join(".claude")).unwrap();
+    let o = run_install_env(t.path(), None, &[("WALKIE_NO_SKILL", "1")]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(t.path().join("out/walkie").exists());
+    assert!(!skill_paths(t.path())[0].exists());
+}
+
+#[test]
+fn skill_checksum_mismatch_aborts_before_installing_anything() {
+    let t = tempfile::tempdir().unwrap();
+    fake_release(t.path());
+    fake_skill(t.path());
+    std::fs::write(
+        t.path().join("SKILL.md.sha256"),
+        format!("{}  SKILL.md\n", "0".repeat(64)),
+    )
+    .unwrap();
+    std::fs::create_dir_all(t.path().join(".claude")).unwrap();
+    let o = run_install(t.path(), None);
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("SKILL.md checksum mismatch"));
+    assert!(!t.path().join("out/walkie").exists());
+    assert!(!skill_paths(t.path())[0].exists());
+}
+
+#[test]
+fn gh_installed_but_not_logged_in_warns_and_installs() {
+    let t = tempfile::tempdir().unwrap();
+    fake_release(t.path());
+    // attestation verify would fail (exit 1), but it must not even be attempted
+    let o = run_install_env(t.path(), Some(1), &[("FAKE_GH_AUTH", "1")]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("not logged in"));
+    assert!(t.path().join("out/walkie").exists());
+}
+
+#[test]
+fn walkie_update_replaces_its_own_executable_from_a_local_release() {
+    let t = tempfile::tempdir().unwrap();
+    let rel = t.path().join("rel");
+    std::fs::create_dir_all(&rel).unwrap();
+    fake_release(&rel);
+    std::fs::copy(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/install.sh"),
+        rel.join("install.sh"),
+    )
+    .unwrap();
+    // an installed walkie in a writable dir: a copy of the real binary
+    let bin_dir = t.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let exe = bin_dir.join("walkie");
+    std::fs::copy(env!("CARGO_BIN_EXE_walkie"), &exe).unwrap();
+    // minimal PATH without gh, as in run_install_env
+    let fakebin = t.path().join("fakebin");
+    std::fs::create_dir_all(&fakebin).unwrap();
+    for tool in [
+        "sh",
+        "cut",
+        "shasum",
+        "sha256sum",
+        "tar",
+        "install",
+        "mkdir",
+        "mktemp",
+        "cp",
+        "mv",
+        "rm",
+        "uname",
+        "curl",
+        "cat",
+        "gzip",
+        "cmp",
+    ] {
+        if let Ok(p) = which(tool) {
+            let _ = std::os::unix::fs::symlink(p, fakebin.join(tool));
+        }
+    }
+    let o = Command::new(&exe)
+        .arg("update")
+        .current_dir(t.path())
+        .env_clear()
+        .env("PATH", &fakebin)
+        .env("HOME", t.path())
+        .env("TMPDIR", t.path())
+        .env("WALKIE_TARGET", TARGET)
+        .env("WALKIE_NO_SKILL", "1")
+        .env("WALKIE_UPDATE_BASE", format!("file://{}", rel.display()))
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let run = Command::new(&exe).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "fake walkie");
+    assert!(String::from_utf8_lossy(&o.stdout).contains("walkie updated"));
 }
