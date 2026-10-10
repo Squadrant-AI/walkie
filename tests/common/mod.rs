@@ -145,6 +145,23 @@ impl Machine {
 
 impl Drop for Machine {
     fn drop(&mut self) {
+        if std::thread::panicking() {
+            // keep the daemon logs of a failed test for diagnosis
+            let keep = std::env::temp_dir().join(format!(
+                "walkie-fail-{}-{}",
+                std::process::id(),
+                self.dir.path().file_name().unwrap().to_string_lossy()
+            ));
+            let _ = std::fs::create_dir_all(&keep);
+            for e in std::fs::read_dir(self.dir.path().join("home/rooms"))
+                .into_iter()
+                .flatten()
+                .flatten()
+            {
+                let _ = std::fs::copy(e.path(), keep.join(e.file_name()));
+            }
+            eprintln!("daemon logs kept in {}", keep.display());
+        }
         for r in self.rooms.borrow().iter() {
             let _ = self.cmd().args(["--room", r, "end"]).output();
         }

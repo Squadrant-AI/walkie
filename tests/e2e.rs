@@ -422,3 +422,20 @@ fn failed_open_leaves_no_phantom_room() {
     let (_, out, _) = a.run(&["rooms"]);
     assert!(out.trim().is_empty(), "{out}");
 }
+
+#[test]
+fn rejoin_right_after_leave_keeps_its_socket() {
+    // Regression (flake): the leaving daemon lingers ~300 ms after `leave`; its late cleanup
+    // used to delete the socket and pid file of the daemon `rejoin` had just started.
+    let (a, b) = (Machine::new(), Machine::new());
+    let room = pair(&a, &b);
+    for round in 0..4 {
+        assert_eq!(a.run(&["--room", &room, "leave"]).0, 0, "leave {round}");
+        assert_eq!(a.run(&["rejoin", &room]).0, 0, "rejoin {round}");
+        std::thread::sleep(std::time::Duration::from_millis(700));
+        let (c, out, err) = a.run(&["--room", &room, "status"]);
+        assert_eq!(c, 0, "daemon unreachable after rejoin {round}: {err}");
+        assert!(out.contains("peer: connected"), "{out}");
+        assert!(a.pid_of(&room).is_some(), "pid file survived");
+    }
+}

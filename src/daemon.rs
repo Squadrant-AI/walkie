@@ -147,6 +147,9 @@ struct Core {
     last_touch: Instant,
     started: Instant,
     sock_path: std::path::PathBuf,
+    pid_path: std::path::PathBuf,
+    /// socket and pid file already removed: the successor daemon may own those paths now
+    retired: bool,
 }
 
 static WAITER_SEQ: AtomicU64 = AtomicU64::new(1);
@@ -252,6 +255,8 @@ async fn run_inner(
         last_touch: Instant::now(),
         started: Instant::now(),
         sock_path: sock_path.to_path_buf(),
+        pid_path: pid_path.to_path_buf(),
+        retired: false,
     };
 
     let mut ticker = tokio::time::interval(TICK);
@@ -275,8 +280,7 @@ async fn run_inner(
     // Stop being "active" right away (before the slow graceful close), so a `rejoin` that follows
     // a `leave` never sees a dying daemon. Only the exiting daemon removes these, and only here:
     // a failed start must not delete a live daemon's socket.
-    let _ = std::fs::remove_file(sock_path);
-    let _ = std::fs::remove_file(pid_path);
+    core.retire();
     core.shutdown().await;
     Ok(())
 }
@@ -381,6 +385,7 @@ impl Core {
                 return;
             }
         };
+        tracing::info!("endpoint ready (mode {:?})", self.mode);
         let my_addr = net::my_addr(&ep, self.ticket.relay_only);
         self.ep = Some(ep.clone());
         // accept loop: handshakes run in their own tasks with a timeout (preflight D5)
@@ -468,6 +473,7 @@ impl Core {
     }
 
     fn on_new_link(&mut self, link: Link, peer_addr: String) {
+        tracing::info!("new link from {}", link.remote_id);
         self.ticket.peer_addr = Some(peer_addr);
         self.save();
         if self.session.peer == PeerState::Ended {
@@ -703,7 +709,7 @@ impl Core {
                 self.finish_room();
                 self.session.on_local_end(SystemTime::now());
                 self.exit_at = Some(Instant::now() + Duration::from_millis(300));
-                self.retire_socket();
+                self.retire();
                 Resp::Ok
             }
         };
@@ -778,13 +784,21 @@ impl Core {
             });
         }
         self.exit_at = Some(Instant::now() + Duration::from_millis(300));
-        self.retire_socket();
+        self.retire();
     }
 
     /// From here on this daemon is no longer "active": an immediate `rejoin` must start a new one.
     /// (Open connections, such as the one carrying this reply, keep working.)
-    fn retire_socket(&self) {
-        let _ = std::fs::remove_file(&self.sock_path);
+    ///
+    /// The pid file goes too. After this the exiting daemon must never touch either path again:
+    /// a `rejoin` started right after `leave` writes its own socket and pid file, and a late
+    /// cleanup here would delete them (the leave/rejoin flake).
+    fn retire(&mut self) {
+        if !self.retired {
+            let _ = std::fs::remove_file(&self.sock_path);
+            let _ = std::fs::remove_file(&self.pid_path);
+            self.retired = true;
+        }
     }
 
     /// Exit after a `wait` client acked the terminal event, or after at most 60 s.
