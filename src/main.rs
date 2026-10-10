@@ -2,7 +2,9 @@
 #![allow(dead_code)]
 
 mod exit;
+mod frame;
 mod invite;
+mod model;
 
 use clap::{Parser, Subcommand};
 use exit::{exit_of, fail, Exit};
