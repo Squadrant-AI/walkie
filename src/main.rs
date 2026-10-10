@@ -6,6 +6,7 @@ mod frame;
 mod invite;
 mod ipc;
 mod model;
+mod net;
 mod paths;
 mod proto;
 mod session;
