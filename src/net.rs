@@ -91,11 +91,6 @@ pub async fn dial(ep: &Endpoint, peer: &PeerAddr) -> Result<Connection> {
     Ok(ep.connect(addr, ALPN).await?)
 }
 
-pub async fn accept(ep: &Endpoint) -> Result<Connection> {
-    let incoming = ep.accept().await.context("endpoint closed")?;
-    Ok(incoming.await?)
-}
-
 #[derive(Debug)]
 pub struct Link {
     pub conn: Connection,
@@ -209,6 +204,12 @@ pub fn keep(a_dialer: &str, b_dialer: &str) -> bool {
 mod tests {
     use super::*;
     use crate::proto::{read_frame, write_frame, Wire};
+
+    // The daemon accepts in its own task (with a handshake timeout); the tests accept inline.
+    async fn accept(ep: &Endpoint) -> Result<Connection> {
+        let incoming = ep.accept().await.context("endpoint closed")?;
+        Ok(incoming.await?)
+    }
 
     #[test]
     fn tie_break_is_symmetric() {

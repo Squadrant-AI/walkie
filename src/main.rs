@@ -1,6 +1,4 @@
-// Removed in Task 11, once every module is wired up.
-#![allow(dead_code)]
-
+mod cli;
 mod daemon;
 mod exit;
 mod frame;
@@ -14,7 +12,7 @@ mod session;
 mod ticket;
 
 use clap::{Parser, Subcommand};
-use exit::{exit_of, fail, Exit};
+use exit::{exit_of, Exit};
 use std::process::ExitCode;
 
 #[derive(Parser)]
@@ -94,5 +92,26 @@ fn run(cli: Cli) -> anyhow::Result<Exit> {
         rt.block_on(daemon::run(room_id, mode))?;
         return Ok(Exit::Ok);
     }
-    Err(fail(Exit::Error, "not implemented yet"))
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let room = cli.room;
+    rt.block_on(async move {
+        match cli.cmd {
+            Cmd::Open {
+                ttl,
+                idle_ttl,
+                relay_only,
+            } => cli::open(*ttl.as_ref(), *idle_ttl.as_ref(), relay_only).await,
+            Cmd::Join { invite } => cli::join(&invite).await,
+            Cmd::Send { text, reply_to } => cli::send(room, &text, reply_to).await,
+            Cmd::Wait { timeout, json } => cli::wait(room, timeout, json).await,
+            Cmd::Status { json } => cli::status(room, json).await,
+            Cmd::Rooms => cli::rooms().await,
+            Cmd::Leave => cli::leave(room).await,
+            Cmd::Rejoin { room_id } => cli::rejoin(room, room_id).await,
+            Cmd::End => cli::end(room).await,
+            Cmd::Daemon { .. } => unreachable!("handled above"),
+        }
+    })
 }

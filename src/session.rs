@@ -107,10 +107,6 @@ impl Session {
         Ok((id, w))
     }
 
-    pub fn outbox_frames(&self) -> Vec<Wire> {
-        self.outbox.iter().map(Self::to_wire).collect()
-    }
-
     pub fn resume_frame(&self) -> Wire {
         Wire::Resume {
             recv_highest: self.recv_highest,
@@ -308,9 +304,6 @@ impl Session {
         self.next_seq - 1
     }
 
-    pub fn has_items(&self) -> bool {
-        self.pending.is_some() || !self.inbox.is_empty()
-    }
     pub fn unread(&self) -> usize {
         self.inbox.len() + self.pending.as_ref().map(|p| p.1.len()).unwrap_or(0)
     }
