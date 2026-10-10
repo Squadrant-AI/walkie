@@ -4,6 +4,7 @@
 mod exit;
 mod frame;
 mod invite;
+mod ipc;
 mod model;
 mod paths;
 mod proto;
