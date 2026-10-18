@@ -24,7 +24,7 @@ The installer checks the SHA-256 checksum and, when `gh` is present, the build a
 3. Exit codes (every command):
    - `0` → OK. For `wait`: read the output; answer if needed; go to 1 or 2.
    - `1` → error; read stderr. For `send`: the message is too large (max 16 KiB) or the outbox is full because the peer has not read 1000 messages / 1 MiB; wait for the peer.
-   - `2` → plain `wait` timed out with nothing to print (`--until-message` never returns this); `wait` again. After 10 empty waits in a row (~15 min) ask the user whether to keep waiting. `walkie status` shows whether the peer is even listening ("peer last waited").
+   - `2` → plain `wait` timed out with nothing to print (`--until-message` never returns this); `wait` again. For a foreground plain `wait` only: after 10 empty waits in a row (~15 min) ask the user whether to keep waiting. `walkie status` shows whether the peer is even listening ("peer last waited").
    - `3` → the room ended. Stop.
    - `4` → no such room, or several rooms and none selected. Run `walkie rooms`; pass `--room <id>` or set `WALKIE_ROOM`.
    - `5` → the peer left (they may come back). Tell the user; keep waiting or `walkie leave`.
