@@ -15,6 +15,10 @@ pub enum Req {
         body: String,
         reply_to: Option<String>,
     },
+    /// `path` is absolute (the CLI resolves it); the daemon reads and checks the file.
+    SendFile {
+        path: String,
+    },
     Wait {
         timeout_ms: u64,
     },
@@ -53,6 +57,12 @@ pub enum Resp {
     },
     Sent {
         id: String,
+    },
+    SentFile {
+        id: String,
+        name: String,
+        size: u64,
+        sha256: String,
     },
     Batch {
         batch_id: u64,

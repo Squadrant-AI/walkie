@@ -1,4 +1,5 @@
 use crate::exit::{fail, Exit};
+use crate::file::{Chunk, Outgoing, Receiver, CHUNK_BYTES};
 use crate::frame::{cost, is_valid_msg_id, sanitize, truncate_body, BATCH_BUDGET, BODY_CAP};
 use crate::model::{EventKind, Item, Path, PeerState, Role};
 use crate::proto::Wire;
@@ -7,12 +8,30 @@ use std::time::SystemTime;
 
 const OUTBOX_MAX_MSGS: usize = 1000;
 const OUTBOX_MAX_BYTES: usize = 1 << 20;
+/// File bytes the peer has not read yet, across all queued transfers (text has its own cap).
+const OUTBOX_MAX_FILE_BYTES: usize = 16 << 20;
+
+#[derive(Clone, Debug)]
+enum OutKind {
+    Text {
+        reply_to: Option<String>,
+        body: String,
+    },
+    FileChunk {
+        xfer: u64,
+        idx: u32,
+        last: bool,
+        name: String,
+        size: u64,
+        sha256: String,
+        data: Vec<u8>,
+    },
+}
 
 #[derive(Clone, Debug)]
 struct OutMsg {
     seq: u64,
-    reply_to: Option<String>,
-    body: String,
+    kind: OutKind,
 }
 
 #[derive(Clone, Debug)]
@@ -47,6 +66,8 @@ pub struct Session {
     inbox: VecDeque<InEntry>,
     pending: Option<(u64, Vec<InEntry>)>,
     next_batch_id: u64,
+    next_xfer: u64,
+    files: Option<Receiver>,
     pub peer: PeerState,
     pub peer_since: SystemTime,
     pub peer_last_waited: Option<SystemTime>,
@@ -66,6 +87,8 @@ impl Session {
             inbox: VecDeque::new(),
             pending: None,
             next_batch_id: 1,
+            next_xfer: 1,
+            files: None,
             peer,
             peer_since: now,
             peer_last_waited: None,
@@ -73,11 +96,36 @@ impl Session {
         }
     }
 
+    /// Where incoming files are saved; without it incoming files are reported as rejected.
+    pub fn set_inbox_dir(&mut self, dir: std::path::PathBuf) {
+        self.files = Some(Receiver::new(dir));
+    }
+
     fn to_wire(m: &OutMsg) -> Wire {
-        Wire::Msg {
-            seq: m.seq,
-            reply_to: m.reply_to.clone(),
-            body: m.body.clone(),
+        match &m.kind {
+            OutKind::Text { reply_to, body } => Wire::Msg {
+                seq: m.seq,
+                reply_to: reply_to.clone(),
+                body: body.clone(),
+            },
+            OutKind::FileChunk {
+                xfer,
+                idx,
+                last,
+                name,
+                size,
+                sha256,
+                data,
+            } => Wire::File {
+                seq: m.seq,
+                xfer: *xfer,
+                idx: *idx,
+                last: *last,
+                name: name.clone(),
+                size: *size,
+                sha256: sha256.clone(),
+                data: data_encoding::BASE64.encode(data),
+            },
         }
     }
 
@@ -88,8 +136,15 @@ impl Session {
         if body.len() > BODY_CAP {
             return Err(fail(Exit::Error, "message too large (max 16 KiB)"));
         }
-        let bytes: usize = self.outbox.iter().map(|m| m.body.len()).sum();
-        if self.outbox.len() >= OUTBOX_MAX_MSGS || bytes + body.len() > OUTBOX_MAX_BYTES {
+        let (count, bytes) = self
+            .outbox
+            .iter()
+            .filter_map(|m| match &m.kind {
+                OutKind::Text { body, .. } => Some(body.len()),
+                _ => None,
+            })
+            .fold((0usize, 0usize), |(c, b), n| (c + 1, b + n));
+        if count >= OUTBOX_MAX_MSGS || bytes + body.len() > OUTBOX_MAX_BYTES {
             return Err(fail(
                 Exit::Error,
                 "outbox full (peer has not read 1000 messages / 1 MiB); wait for the peer",
@@ -97,14 +152,69 @@ impl Session {
         }
         let m = OutMsg {
             seq: self.next_seq,
-            reply_to,
-            body: body.to_string(),
+            kind: OutKind::Text {
+                reply_to,
+                body: body.to_string(),
+            },
         };
         self.next_seq += 1;
         let id = format!("{}{}", self.role.prefix(), m.seq);
         let w = Self::to_wire(&m);
         self.outbox.push_back(m);
         Ok((id, w))
+    }
+
+    /// Queues a file as consecutive chunks in the normal seq space, so ordering, dedupe, acks and
+    /// resend-after-reconnect are exactly those of text. The id is the last chunk's seq.
+    pub fn send_file(&mut self, f: Outgoing) -> anyhow::Result<(String, Vec<Wire>)> {
+        if self.peer == PeerState::Ended {
+            return Err(fail(Exit::Ended, "room has ended"));
+        }
+        let queued: usize = self
+            .outbox
+            .iter()
+            .map(|m| match &m.kind {
+                OutKind::FileChunk { data, .. } => data.len(),
+                _ => 0,
+            })
+            .sum();
+        if queued + f.data.len() > OUTBOX_MAX_FILE_BYTES {
+            return Err(fail(
+                Exit::Error,
+                "outbox full (peer has not read 16 MiB of files); wait for the peer",
+            ));
+        }
+        let xfer = self.next_xfer;
+        self.next_xfer += 1;
+        let size = f.data.len() as u64;
+        let chunks: Vec<&[u8]> = if f.data.is_empty() {
+            vec![&[][..]]
+        } else {
+            f.data.chunks(CHUNK_BYTES).collect()
+        };
+        let n = chunks.len();
+        let mut wires = Vec::with_capacity(n);
+        for (i, data) in chunks.into_iter().enumerate() {
+            let m = OutMsg {
+                seq: self.next_seq,
+                kind: OutKind::FileChunk {
+                    xfer,
+                    idx: i as u32,
+                    last: i + 1 == n,
+                    name: f.name.clone(),
+                    size,
+                    sha256: f.sha256.clone(),
+                    data: data.to_vec(),
+                },
+            };
+            self.next_seq += 1;
+            wires.push(Self::to_wire(&m));
+            self.outbox.push_back(m);
+        }
+        Ok((
+            format!("{}{}", self.role.prefix(), self.next_seq - 1),
+            wires,
+        ))
     }
 
     pub fn resume_frame(&self) -> Wire {
@@ -177,6 +287,58 @@ impl Session {
                         body,
                     },
                 });
+                vec![Wire::AckStored { seq }]
+            }
+            Wire::File {
+                seq,
+                xfer,
+                idx,
+                last,
+                name,
+                size,
+                sha256,
+                data,
+            } => {
+                if seq != self.recv_highest + 1 {
+                    return vec![];
+                }
+                self.recv_highest = seq;
+                let data = data_encoding::BASE64
+                    .decode(data.as_bytes())
+                    .unwrap_or_default();
+                let chunk = Chunk {
+                    xfer,
+                    idx,
+                    last,
+                    name: &name,
+                    size,
+                    sha256: &sha256,
+                    data: &data,
+                };
+                let done = match self.files.as_mut() {
+                    Some(r) => r.on_chunk(&chunk),
+                    None => last.then(|| crate::file::Received {
+                        name: crate::file::sanitize_name(&name),
+                        size,
+                        sha256: "-".into(),
+                        path: None,
+                        problem: Some("this daemon has no inbox".into()),
+                    }),
+                };
+                if let Some(r) = done {
+                    self.inbox.push_back(InEntry {
+                        seq: Some(seq),
+                        item: Item::File {
+                            id: format!("{}{}", self.role.peer().prefix(), seq),
+                            received: now,
+                            name: r.name,
+                            size: r.size,
+                            sha256: r.sha256,
+                            path: r.path,
+                            problem: r.problem,
+                        },
+                    });
+                }
                 vec![Wire::AckStored { seq }]
             }
             Wire::AckStored { seq } => {
@@ -575,6 +737,124 @@ mod tests {
                 send_base: 0,
                 read_upto: 6
             }
+        );
+    }
+
+    fn outgoing(data: &[u8]) -> crate::file::Outgoing {
+        crate::file::Outgoing {
+            name: "f.bin".into(),
+            data: data.to_vec(),
+            sha256: crate::file::sha256_hex(data),
+        }
+    }
+    fn with_inbox(role: Role) -> (tempfile::TempDir, Session) {
+        let t = tempfile::tempdir().unwrap();
+        let mut s = connected(role);
+        s.set_inbox_dir(t.path().join("room").join("inbox"));
+        (t, s)
+    }
+
+    #[test]
+    fn file_chunks_roundtrip_dedupe_and_redeliver_once() {
+        let data: Vec<u8> = (0..CHUNK_BYTES * 2 + 5).map(|i| (i % 256) as u8).collect();
+        let mut h = connected(Role::Host);
+        let (id, wires) = h.send_file(outgoing(&data)).unwrap();
+        assert_eq!((id.as_str(), wires.len()), ("h3", 3));
+        let (_t, mut j) = with_inbox(Role::Joiner);
+        for w in &wires {
+            j.on_wire(w.clone(), now());
+        }
+        // a resend after reconnect: every chunk is a duplicate, nothing new is stored
+        for w in &wires {
+            assert!(j.on_wire(w.clone(), now()).is_empty());
+        }
+        let b = j.take_batch().unwrap();
+        assert_eq!(b.items.len(), 1);
+        match &b.items[0] {
+            Item::File {
+                id,
+                size,
+                sha256,
+                path,
+                problem,
+                ..
+            } => {
+                assert!(problem.is_none(), "{problem:?}");
+                assert_eq!((id.as_str(), *size), ("h3", data.len() as u64));
+                assert_eq!(sha256, &crate::file::sha256_hex(&data));
+                assert_eq!(std::fs::read(path.as_ref().unwrap()).unwrap(), data);
+                assert!(problem.is_none());
+            }
+            other => panic!("{other:?}"),
+        }
+        // the read ack covers the whole file (last chunk's seq)
+        assert_eq!(
+            j.ack_batch(b.id).unwrap().read,
+            Some(Wire::AckRead { seq: 3 })
+        );
+    }
+
+    #[test]
+    fn resume_resends_only_the_chunks_the_peer_lacks() {
+        let mut h = connected(Role::Host);
+        let data = vec![1u8; CHUNK_BYTES * 3];
+        h.send_file(outgoing(&data)).unwrap();
+        let out = h.on_peer_resume(1, 0, 0);
+        let seqs: Vec<u64> = out
+            .iter()
+            .map(|w| match w {
+                Wire::File { seq, .. } => *seq,
+                _ => panic!(),
+            })
+            .collect();
+        assert_eq!(seqs, vec![2, 3]);
+    }
+
+    #[test]
+    fn tampered_file_is_reported_not_saved() {
+        let mut h = connected(Role::Host);
+        let mut f = outgoing(b"hello");
+        f.sha256 = crate::file::sha256_hex(b"something else");
+        let (_, wires) = h.send_file(f).unwrap();
+        let (t, mut j) = with_inbox(Role::Joiner);
+        for w in wires {
+            j.on_wire(w, now());
+        }
+        match &j.take_batch().unwrap().items[0] {
+            Item::File { path, problem, .. } => {
+                assert!(path.is_none());
+                assert!(problem.as_ref().unwrap().contains("sha256 mismatch"));
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(
+            std::fs::read_dir(t.path().join("room/inbox"))
+                .unwrap()
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn file_outbox_is_capped_separately_from_text() {
+        let mut h = connected(Role::Host);
+        let big = vec![0u8; 8 << 20];
+        h.send_file(outgoing(&big)).unwrap();
+        h.send_file(outgoing(&big)).unwrap();
+        let e = h.send_file(outgoing(b"x")).unwrap_err();
+        assert!(e.to_string().contains("outbox full"));
+        h.send("text is unaffected", None).unwrap();
+        h.on_wire(Wire::AckRead { seq: 1000 }, now());
+        h.send_file(outgoing(b"x")).unwrap();
+    }
+
+    #[test]
+    fn file_after_end_exits_3() {
+        let mut h = connected(Role::Host);
+        h.on_wire(Wire::End, now());
+        assert_eq!(
+            exit_of(&h.send_file(outgoing(b"x")).unwrap_err()),
+            Exit::Ended
         );
     }
 

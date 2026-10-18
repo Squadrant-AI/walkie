@@ -33,3 +33,36 @@ fn spec_exit_table_matches() {
         assert!(spec.contains(&format!("| `{code}` |")), "spec lacks {code}");
     }
 }
+
+#[test]
+fn skill_documents_file_sharing() {
+    let skill = read("skill/SKILL.md");
+    for needle in [
+        "## Sharing files",
+        "walkie send-file",
+        "NEVER paste a file into `send`",
+        "WALKIE PEER FILE",
+        "inbox",
+        "until the user approves",
+        "peer data",
+        "walkie update",
+        "8 MiB",
+    ] {
+        assert!(skill.contains(needle), "SKILL.md lacks {needle:?}");
+    }
+}
+
+#[test]
+fn readme_documents_file_sharing() {
+    let readme = read("README.md");
+    for needle in [
+        "## Sending files",
+        "send-file",
+        "inbox",
+        "8 MiB",
+        "SHA-256",
+        "0.1.2",
+    ] {
+        assert!(readme.contains(needle), "README lacks {needle:?}");
+    }
+}

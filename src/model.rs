@@ -93,4 +93,15 @@ pub enum Item {
         kind: EventKind,
         at: SystemTime,
     },
+    /// A file the peer sent. `path` is where the receiving daemon saved it; `None` plus a
+    /// `problem` means it was rejected (bad hash, over the limit, ...). `sha256` is receiver-computed.
+    File {
+        id: String,
+        received: SystemTime,
+        name: String,
+        size: u64,
+        sha256: String,
+        path: Option<std::path::PathBuf>,
+        problem: Option<String>,
+    },
 }

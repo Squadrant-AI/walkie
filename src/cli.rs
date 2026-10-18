@@ -279,6 +279,36 @@ pub async fn send(room: Option<String>, text: &str, reply_to: Option<String>) ->
     }
 }
 
+pub async fn send_file(room: Option<String>, paths: &[String]) -> Result<Exit> {
+    let room = select_room(room).await?;
+    // check everything first so a bad argument never leaves a half-sent batch
+    let mut abs = Vec::new();
+    for p in paths {
+        let path = std::path::absolute(p).with_context(|| format!("resolving {p}"))?;
+        crate::file::check_sendable(&path)?;
+        abs.push(path);
+    }
+    for path in abs {
+        match call(
+            &room,
+            &Req::SendFile {
+                path: path.to_string_lossy().into_owned(),
+            },
+        )
+        .await?
+        {
+            Resp::SentFile {
+                id,
+                name,
+                size,
+                sha256,
+            } => println!("{id} {name} ({size} bytes, sha256 {sha256})"),
+            other => return Err(fail(Exit::Error, format!("unexpected reply: {other:?}"))),
+        }
+    }
+    Ok(Exit::Ok)
+}
+
 pub async fn wait(room: Option<String>, timeout: u64, json: bool) -> Result<Exit> {
     let room = select_room(room).await?;
     let mut c = Client::connect(&room).await?;

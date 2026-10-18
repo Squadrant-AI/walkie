@@ -126,6 +126,16 @@ pub struct Link {
     pub recv: RecvStream,
     pub remote_id: String,
     pub dialed_by: String,
+    /// Optional features the peer advertised in the handshake (empty for v0.1.2 peers).
+    pub peer_caps: Vec<String>,
+}
+
+fn my_caps() -> Vec<String> {
+    // test-only: pretend to be a v0.1.2 peer
+    if cfg!(debug_assertions) && std::env::var("WALKIE_TEST_NO_CAPS").is_ok() {
+        return vec![];
+    }
+    vec![crate::proto::CAP_FILE.to_string()]
 }
 
 pub async fn client_handshake(
@@ -139,11 +149,12 @@ pub async fn client_handshake(
         &Wire::Hello {
             token,
             addr: my_addr.clone(),
+            caps: my_caps(),
         },
     )
     .await?;
     match read_frame(&mut recv).await? {
-        Wire::Welcome { addr } => {
+        Wire::Welcome { addr, caps } => {
             let remote_id = conn.remote_id().to_string(); // infallible on `Connection`
                                                           // `Connection` has no `local_id()`; our id is the one inside our own ticket.
             let me = EndpointTicket::from_str(&my_addr)?
@@ -157,6 +168,7 @@ pub async fn client_handshake(
                     recv,
                     remote_id,
                     dialed_by: me,
+                    peer_caps: caps,
                 },
                 addr,
             ))
@@ -177,7 +189,7 @@ pub async fn server_handshake(
     let (mut send, mut recv) = conn.accept_bi().await?;
     let remote_id = conn.remote_id().to_string();
     match read_frame(&mut recv).await? {
-        Wire::Hello { token, addr } => {
+        Wire::Hello { token, addr, caps } => {
             if !auth(&remote_id, token.as_deref()) {
                 let _ = write_frame(
                     &mut send,
@@ -190,7 +202,14 @@ pub async fn server_handshake(
                 conn.close(1u32.into(), b"rejected");
                 return Err(fail(Exit::BadInvite, "rejected a join attempt"));
             }
-            write_frame(&mut send, &Wire::Welcome { addr: my_addr }).await?;
+            write_frame(
+                &mut send,
+                &Wire::Welcome {
+                    addr: my_addr,
+                    caps: my_caps(),
+                },
+            )
+            .await?;
             Ok((
                 Link {
                     conn: conn.clone(),
@@ -198,6 +217,7 @@ pub async fn server_handshake(
                     recv,
                     dialed_by: remote_id.clone(),
                     remote_id,
+                    peer_caps: caps,
                 },
                 addr,
             ))

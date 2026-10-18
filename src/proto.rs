@@ -6,15 +6,23 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 /// so the frame cap must stay well above 6 * BODY_CAP (preflight D4).
 pub const MAX_FRAME: usize = 256 * 1024;
 
+/// Capability advertised in `Hello` / `Welcome` by peers that understand `Wire::File`.
+pub const CAP_FILE: &str = "file/1";
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum Wire {
+    /// `caps`: optional features this side supports (v0.1.2 peers send none and ignore ours).
     Hello {
         token: Option<String>,
         addr: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        caps: Vec<String>,
     },
     Welcome {
         addr: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        caps: Vec<String>,
     },
     Reject {
         reason: String,
@@ -31,6 +39,18 @@ pub enum Wire {
         seq: u64,
         reply_to: Option<String>,
         body: String,
+    },
+    /// One chunk of a file transfer; shares the `seq` space, dedupe and acks with `Msg`.
+    /// Every chunk repeats the header so each frame is self-describing; `data` is base64.
+    File {
+        seq: u64,
+        xfer: u64,
+        idx: u32,
+        last: bool,
+        name: String,
+        size: u64,
+        sha256: String,
+        data: String,
     },
     AckStored {
         seq: u64,
@@ -74,13 +94,16 @@ mod tests {
             Wire::Hello {
                 token: Some("abc".into()),
                 addr: "endpointx".into(),
+                caps: vec![CAP_FILE.into()],
             },
             Wire::Hello {
                 token: None,
                 addr: "endpointx".into(),
+                caps: vec![],
             },
             Wire::Welcome {
                 addr: "endpointy".into(),
+                caps: vec![CAP_FILE.into()],
             },
             Wire::Reject {
                 reason: "bad token".into(),
@@ -95,6 +118,16 @@ mod tests {
                 reply_to: Some("h3".into()),
                 body: "hi\n\"q\"".into(),
             },
+            Wire::File {
+                seq: 5,
+                xfer: 2,
+                idx: 0,
+                last: true,
+                name: "a.txt".into(),
+                size: 3,
+                sha256: "00".repeat(32),
+                data: "YWJj".into(),
+            },
             Wire::AckStored { seq: 4 },
             Wire::AckRead { seq: 4 },
             Wire::Waiting,
@@ -108,6 +141,52 @@ mod tests {
         for f in &frames {
             assert_eq!(&read_frame(&mut b).await.unwrap(), f);
         }
+    }
+
+    #[test]
+    fn v012_handshake_frames_still_parse_and_ours_parse_there() {
+        // a v0.1.2 peer sends no `caps`; its parser ignores ours (no deny_unknown_fields)
+        let old: Wire = serde_json::from_str(r#"{"t":"hello","token":null,"addr":"a"}"#).unwrap();
+        assert_eq!(
+            old,
+            Wire::Hello {
+                token: None,
+                addr: "a".into(),
+                caps: vec![]
+            }
+        );
+        let old: Wire = serde_json::from_str(r#"{"t":"welcome","addr":"a"}"#).unwrap();
+        assert_eq!(
+            old,
+            Wire::Welcome {
+                addr: "a".into(),
+                caps: vec![]
+            }
+        );
+        let ours = serde_json::to_string(&Wire::Welcome {
+            addr: "a".into(),
+            caps: vec![],
+        })
+        .unwrap();
+        assert_eq!(ours, r#"{"t":"welcome","addr":"a"}"#);
+    }
+
+    #[tokio::test]
+    async fn max_file_chunk_fits_in_a_frame() {
+        let w = Wire::File {
+            seq: u64::MAX,
+            xfer: u64::MAX,
+            idx: u32::MAX,
+            last: false,
+            name: "n".repeat(200),
+            size: u64::MAX,
+            sha256: "f".repeat(64),
+            data: data_encoding::BASE64.encode(&vec![0xffu8; crate::file::CHUNK_BYTES]),
+        };
+        assert!(serde_json::to_vec(&w).unwrap().len() < MAX_FRAME / 3);
+        let (mut a, mut b) = tokio::io::duplex(1 << 20);
+        write_frame(&mut a, &w).await.unwrap();
+        assert_eq!(read_frame(&mut b).await.unwrap(), w);
     }
 
     #[tokio::test]

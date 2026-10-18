@@ -1,6 +1,7 @@
 mod cli;
 mod daemon;
 mod exit;
+mod file;
 mod frame;
 mod invite;
 mod ipc;
@@ -44,6 +45,11 @@ enum Cmd {
         text: String,
         #[arg(long)]
         reply_to: Option<String>,
+    },
+    /// Send one or more files (max 8 MiB each); they land in the peer's inbox
+    SendFile {
+        #[arg(required = true)]
+        paths: Vec<String>,
     },
     /// Wait for messages/events
     Wait {
@@ -115,6 +121,7 @@ fn run(cli: Cli) -> anyhow::Result<Exit> {
             } => cli::open(*ttl.as_ref(), *idle_ttl.as_ref(), relay_only).await,
             Cmd::Join { invite } => cli::join(&invite).await,
             Cmd::Send { text, reply_to } => cli::send(room, &text, reply_to).await,
+            Cmd::SendFile { paths } => cli::send_file(room, &paths).await,
             Cmd::Wait { timeout, json } => cli::wait(room, timeout, json).await,
             Cmd::Status { json } => cli::status(room, json).await,
             Cmd::Rooms => cli::rooms().await,
