@@ -33,3 +33,21 @@ fn spec_exit_table_matches() {
         assert!(spec.contains(&format!("| `{code}` |")), "spec lacks {code}");
     }
 }
+
+#[test]
+fn skill_keeps_a_background_wait_running() {
+    let skill = read("skill/SKILL.md");
+    for needle in [
+        "walkie wait --until-message",
+        "run_in_background: true",
+        "Keep listening",
+        "Do NOT ask the user \"should I keep listening?\"",
+    ] {
+        assert!(skill.contains(needle), "SKILL.md is missing {needle:?}");
+    }
+}
+
+#[test]
+fn readme_documents_until_message() {
+    assert!(read("README.md").contains("--until-message"));
+}
