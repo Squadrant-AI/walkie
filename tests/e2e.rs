@@ -471,3 +471,30 @@ fn message_sent_after_peer_left_is_delivered_once_on_rejoin() {
     assert_eq!(out.matches("id: h1   ").count(), 1, "{out}");
     assert_eq!(b.run(&["--room", &room, "wait", "--timeout", "1"]).0, 2);
 }
+
+#[test]
+fn until_message_outlives_empty_timeouts_then_returns_message() {
+    let (a, b) = (Machine::new(), Machine::new());
+    let room = pair(&a, &b);
+    a.run(&["--room", &room, "wait", "--timeout", "5"]); // peer-joined
+    let waiter = a.spawn(&["--room", &room, "wait", "--timeout", "1", "--until-message"]);
+    // longer than two empty 1 s timeouts: plain `wait` would have exited 2 by now
+    std::thread::sleep(std::time::Duration::from_millis(2500));
+    b.run(&["--room", &room, "send", "finally"]);
+    let (c, out, _) = out_of(waiter.wait_with_output().unwrap());
+    assert_eq!(c, 0);
+    assert!(out.contains("finally"));
+}
+
+#[test]
+fn until_message_returns_3_when_room_ends() {
+    let (a, b) = (Machine::new(), Machine::new());
+    let room = pair(&a, &b);
+    a.run(&["--room", &room, "wait", "--timeout", "5"]); // peer-joined
+    let waiter = a.spawn(&["--room", &room, "wait", "--timeout", "1", "--until-message"]);
+    std::thread::sleep(std::time::Duration::from_millis(2500));
+    b.run(&["--room", &room, "end"]);
+    let (c, out, _) = out_of(waiter.wait_with_output().unwrap());
+    assert_eq!(c, 3);
+    assert!(out.contains("room-ended"));
+}

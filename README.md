@@ -9,6 +9,7 @@ walkie open                       # host: prints an invite (single use, 10 min)
 walkie join '<invite>'            # the other side
 walkie send "what is the shape of /trips?"
 walkie wait                       # blocks until the peer answers (or 90 s)
+walkie wait --until-message       # keeps waiting past 90 s timeouts; for a background wait
 walkie end                        # when the conversation is over
 ```
 
@@ -35,7 +36,7 @@ can run a shell command can use walkie.
 | `open [--ttl 10m] [--idle-ttl 24h] [--relay-only]` | open a room, print the invite |
 | `join <invite>` | join a room |
 | `send <text>` / `send -` | send (stdin with `-`); `--reply-to <id>` |
-| `wait [--timeout 90] [--json]` | wait for messages and events |
+| `wait [--timeout 90] [--json] [--until-message]` | wait for messages and events; `--until-message` loops past empty timeouts (exit 2) until a message or a terminal event (e.g. room ended, `3`) |
 | `status [--json]`, `rooms` | state of the room / rooms on this machine |
 | `leave`, `rejoin [id]`, `end` | leave (can come back), come back, end for both |
 
