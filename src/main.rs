@@ -57,6 +57,10 @@ enum Cmd {
         timeout: u64,
         #[arg(long)]
         json: bool,
+        /// Keep waiting past empty timeouts (exit 2) until a message or a terminal event
+        /// (room ended, peer left, error); use it for a long background wait
+        #[arg(long)]
+        until_message: bool,
     },
     /// Show room and peer status
     Status {
@@ -122,7 +126,11 @@ fn run(cli: Cli) -> anyhow::Result<Exit> {
             Cmd::Join { invite } => cli::join(&invite).await,
             Cmd::Send { text, reply_to } => cli::send(room, &text, reply_to).await,
             Cmd::SendFile { paths } => cli::send_file(room, &paths).await,
-            Cmd::Wait { timeout, json } => cli::wait(room, timeout, json).await,
+            Cmd::Wait {
+                timeout,
+                json,
+                until_message,
+            } => cli::wait(room, timeout, json, until_message).await,
             Cmd::Status { json } => cli::status(room, json).await,
             Cmd::Rooms => cli::rooms().await,
             Cmd::Leave => cli::leave(room).await,

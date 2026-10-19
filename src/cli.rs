@@ -309,9 +309,23 @@ pub async fn send_file(room: Option<String>, paths: &[String]) -> Result<Exit> {
     Ok(Exit::Ok)
 }
 
-pub async fn wait(room: Option<String>, timeout: u64, json: bool) -> Result<Exit> {
+pub async fn wait(
+    room: Option<String>,
+    timeout: u64,
+    json: bool,
+    until_message: bool,
+) -> Result<Exit> {
     let room = select_room(room).await?;
-    let mut c = Client::connect(&room).await?;
+    loop {
+        let exit = wait_once(&room, timeout, json).await?;
+        if exit != Exit::Timeout || !until_message {
+            return Ok(exit);
+        }
+    }
+}
+
+async fn wait_once(room: &str, timeout: u64, json: bool) -> Result<Exit> {
+    let mut c = Client::connect(room).await?;
     c.send(&Req::Wait {
         timeout_ms: timeout * 1000,
     })

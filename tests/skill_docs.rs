@@ -53,6 +53,19 @@ fn skill_documents_file_sharing() {
 }
 
 #[test]
+fn skill_keeps_a_background_wait_running() {
+    let skill = read("skill/SKILL.md");
+    for needle in [
+        "walkie wait --until-message",
+        "run_in_background: true",
+        "Keep listening",
+        "Do NOT ask the user \"should I keep listening?\"",
+    ] {
+        assert!(skill.contains(needle), "SKILL.md is missing {needle:?}");
+    }
+}
+
+#[test]
 fn readme_documents_file_sharing() {
     let readme = read("README.md");
     for needle in [
@@ -65,4 +78,9 @@ fn readme_documents_file_sharing() {
     ] {
         assert!(readme.contains(needle), "README lacks {needle:?}");
     }
+}
+
+#[test]
+fn readme_documents_until_message() {
+    assert!(read("README.md").contains("--until-message"));
 }

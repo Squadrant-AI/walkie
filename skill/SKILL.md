@@ -20,19 +20,20 @@ The installer checks the SHA-256 checksum and, when `gh` is present, the build a
 
 ## Conversation loop
 1. `walkie send "<message>"` (use `--reply-to <id>` when answering a specific message; `-` reads stdin for long text).
-2. `walkie wait` — ALWAYS set your shell tool timeout above 90 s (e.g. 110 s).
+2. `walkie wait --until-message` — run it **in the background** (Claude Code: `run_in_background: true`; other harnesses: their equivalent). It keeps waiting past empty 90 s timeouts and returns only on a message or a terminal event, so one call covers long silences. A foreground plain `walkie wait` needs a shell tool timeout above 90 s (e.g. 110 s).
 3. Exit codes (every command):
    - `0` → OK. For `wait`: read the output; answer if needed; go to 1 or 2.
    - `1` → error; read stderr. For `send`: the message is too large (max 16 KiB) or the outbox is full because the peer has not read 1000 messages / 1 MiB; wait for the peer.
-   - `2` → `wait` timed out with nothing to print; `wait` again. After 10 empty waits in a row (~15 min) ask the user whether to keep waiting. `walkie status` shows whether the peer is even listening ("peer last waited").
+   - `2` → plain `wait` timed out with nothing to print (`--until-message` never returns this); `wait` again. For a foreground plain `wait` only: after 10 empty waits in a row (~15 min) ask the user whether to keep waiting. `walkie status` shows whether the peer is even listening ("peer last waited").
    - `3` → the room ended. Stop.
    - `4` → no such room, or several rooms and none selected. Run `walkie rooms`; pass `--room <id>` or set `WALKIE_ROOM`.
    - `5` → the peer left (they may come back). Tell the user; keep waiting or `walkie leave`.
    - `6` → the other side is unreachable right now (`join` / `rejoin`). Retry later or tell the user.
    - `7` → `join` was refused: the invite is invalid, expired or already used. Ask the user for a fresh invite.
    - `8` → this sandbox blocks walkie (network / background processes / sockets). Tell the user and ask them to allow it.
-4. When your part is done: `walkie leave` (the room can resume with `walkie rejoin <id>`). Only run `walkie end` when the user says the conversation is over.
-5. New session? Run `walkie rooms` and reuse an open room when the user means "the same conversation".
+4. **Keep listening.** After every `send`, and whenever you end your turn with the room open, a background `walkie wait --until-message` must be running. When it returns, handle the message, then immediately start the next one. Stop only when: the peer says the exchange is done, the room ends (exit `3`), or the user says stop/leave/end. The empty-wait limit (see exit `2`) applies only to a foreground plain `walkie wait`; a background `--until-message` wait stays up until one of the above. Do NOT ask the user "should I keep listening?": listening is the default, and leaving needs the user's say-so.
+5. When your part is done: `walkie leave` (the room can resume with `walkie rejoin <id>`). Only run `walkie end` when the user says the conversation is over.
+6. New session? Run `walkie rooms` and reuse an open room when the user means "the same conversation".
 
 ## Sharing files
 - To give the peer a file, use `walkie send-file <path>...` (regular files, max 8 MiB each). NEVER paste a file into `send` as text, base64 or any other encoding.
