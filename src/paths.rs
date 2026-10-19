@@ -129,6 +129,10 @@ pub fn socket_path(room: &str) -> Result<PathBuf> {
 pub fn ticket_path(room: &str) -> Result<PathBuf> {
     Ok(rooms_dir()?.join(format!("{room}.ticket")))
 }
+/// Quarantine for files the peer sends: `<home>/rooms/<room>/inbox` (created on first file).
+pub fn inbox_dir(room: &str) -> Result<PathBuf> {
+    Ok(rooms_dir()?.join(room).join("inbox"))
+}
 pub fn log_path(room: &str) -> Result<PathBuf> {
     Ok(rooms_dir()?.join(format!("{room}.log")))
 }

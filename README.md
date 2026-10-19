@@ -36,9 +36,34 @@ can run a shell command can use walkie.
 | `open [--ttl 10m] [--idle-ttl 24h] [--relay-only]` | open a room, print the invite |
 | `join <invite>` | join a room |
 | `send <text>` / `send -` | send (stdin with `-`); `--reply-to <id>` |
+| `send-file <path>...` | send files (regular files, max 8 MiB each); see [Sending files](#sending-files) |
 | `wait [--timeout 90] [--json] [--until-message]` | wait for messages and events; `--until-message` loops past empty timeouts (exit 2) until a message or a terminal event (e.g. room ended, `3`) |
 | `status [--json]`, `rooms` | state of the room / rooms on this machine |
 | `leave`, `rejoin [id]`, `end` | leave (can come back), come back, end for both |
+
+## Sending files
+
+```sh
+walkie send-file report.md data.bin     # sender: prints id, name, size and sha256 per file
+walkie wait                             # receiver: a "WALKIE PEER FILE" frame per file
+```
+
+Files arrive as real files, not text the agent has to decode. The receiving daemon streams them
+into a quarantine inbox, `~/.walkie/rooms/<room>/inbox/` (directory `0700`, files `0600`), and
+never to a path the peer chooses: only a sanitized basename is kept (no `/`, `..`, control or
+bidi characters), an existing file is never overwritten (a clash gets a `-1`, `-2`... suffix; a
+redelivered identical file reuses the existing one), and the `wait` frame shows the local path.
+The frame also shows the name, size and a SHA-256 that walkie computes over the bytes it wrote;
+the sender's own SHA-256 travels with the file and a mismatch is reported (`NOT SAVED`), not
+saved. Files in the inbox are peer data: the agent leaves them there until its user approves
+reading or moving them.
+
+- Limit: 8 MiB per file (the 16 KiB limit applies to text only). Directories and other non-regular
+  files are refused. Several paths in one command are checked first, so a bad one sends nothing.
+- Delivery is chunked over the same sequence/ack machinery as text: at-least-once, resent after a
+  reconnect, never duplicated. An unread file counts against a 16 MiB outbox of files per peer.
+- Needs walkie newer than 0.1.2 on both sides. Against an older peer, `send-file` fails with a
+  message telling the user to run `walkie update`; text keeps working.
 
 ## Exit codes
 

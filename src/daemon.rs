@@ -116,6 +116,8 @@ struct Cur {
     conn: iroh::endpoint::Connection,
     dialed_by: String,
     wtx: mpsc::UnboundedSender<Wire>,
+    /// the peer advertised `CAP_FILE` in the handshake (v0.1.2 peers do not)
+    peer_files: bool,
     awaiting_resume: bool,
     last_rx: Instant,
 }
@@ -194,11 +196,12 @@ async fn run_inner(
     let ticket = Ticket::load(room)?;
     let listener = bind_socket(sock_path).await?;
     let now = SystemTime::now();
-    let session = match mode {
+    let mut session = match mode {
         Mode::Open => Session::new(Role::Host, PeerState::NotJoined, now),
         Mode::Join => Session::new(Role::Joiner, PeerState::NotJoined, now),
         Mode::Rejoin => Session::new(ticket.role, PeerState::Disconnected, now),
     };
+    session.set_inbox_dir(paths::inbox_dir(room)?);
     let (tx, mut rx) = mpsc::unbounded_channel::<CoreEvent>();
     let auth = Arc::new(Mutex::new(Auth {
         role: ticket.role,
@@ -506,6 +509,7 @@ impl Core {
             send,
             recv,
             dialed_by,
+            peer_caps,
             ..
         } = link;
         // writer task: the core never awaits on the network
@@ -548,6 +552,7 @@ impl Core {
             conn,
             dialed_by,
             wtx,
+            peer_files: peer_caps.iter().any(|c| c == crate::proto::CAP_FILE),
             awaiting_resume: true,
             last_rx: Instant::now(),
         });
@@ -585,7 +590,7 @@ impl Core {
             // a leaving daemon lingers briefly but is no longer a receiver: storing/acking here
             // would make the sender's leave report call the message "delivered" while it is
             // dropped with this daemon. Unacked, it is redelivered after a rejoin (Resume).
-            Wire::Msg { .. } if self.leaving.is_some() || self.retired => {}
+            Wire::Msg { .. } | Wire::File { .. } if self.leaving.is_some() || self.retired => {}
             other => {
                 let is_end = matches!(other, Wire::End);
                 for f in self.session.on_wire(other, now) {
@@ -683,6 +688,7 @@ impl Core {
                     message: format!("{e:#}"),
                 },
             },
+            Req::SendFile { path } => self.send_file(&path),
             Req::Wait { .. } => Resp::Err {
                 exit: Exit::Error.code(),
                 message: "wait is handled by the connection task".into(),
@@ -718,6 +724,47 @@ impl Core {
             }
         };
         let _ = reply.send(resp);
+    }
+
+    fn send_file(&mut self, path: &str) -> Resp {
+        let err = |e: anyhow::Error| Resp::Err {
+            exit: exit_of(&e).code(),
+            message: format!("{e:#}"),
+        };
+        match &self.current {
+            Some(c) if c.peer_files => {}
+            Some(_) => {
+                return err(fail(
+                    Exit::Error,
+                    "the peer's walkie is too old for send-file (v0.1.2 or earlier); ask them to run `walkie update`",
+                ))
+            }
+            None => {
+                return err(fail(
+                    Exit::Error,
+                    "peer is not connected; cannot confirm it supports send-file. Retry when `walkie status` shows connected",
+                ))
+            }
+        }
+        let f = match crate::file::load_outgoing(std::path::Path::new(path)) {
+            Ok(f) => f,
+            Err(e) => return err(e),
+        };
+        let (name, size, sha256) = (f.name.clone(), f.data.len() as u64, f.sha256.clone());
+        match self.session.send_file(f) {
+            Ok((id, wires)) => {
+                for w in wires {
+                    self.tx_wire(w);
+                }
+                Resp::SentFile {
+                    id,
+                    name,
+                    size,
+                    sha256,
+                }
+            }
+            Err(e) => err(e),
+        }
     }
 
     fn status(&self) -> StatusInfo {

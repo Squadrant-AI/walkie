@@ -35,6 +35,24 @@ fn spec_exit_table_matches() {
 }
 
 #[test]
+fn skill_documents_file_sharing() {
+    let skill = read("skill/SKILL.md");
+    for needle in [
+        "## Sharing files",
+        "walkie send-file",
+        "NEVER paste a file into `send`",
+        "WALKIE PEER FILE",
+        "inbox",
+        "until the user approves",
+        "peer data",
+        "walkie update",
+        "8 MiB",
+    ] {
+        assert!(skill.contains(needle), "SKILL.md lacks {needle:?}");
+    }
+}
+
+#[test]
 fn skill_keeps_a_background_wait_running() {
     let skill = read("skill/SKILL.md");
     for needle in [
@@ -44,6 +62,21 @@ fn skill_keeps_a_background_wait_running() {
         "Do NOT ask the user \"should I keep listening?\"",
     ] {
         assert!(skill.contains(needle), "SKILL.md is missing {needle:?}");
+    }
+}
+
+#[test]
+fn readme_documents_file_sharing() {
+    let readme = read("README.md");
+    for needle in [
+        "## Sending files",
+        "send-file",
+        "inbox",
+        "8 MiB",
+        "SHA-256",
+        "0.1.2",
+    ] {
+        assert!(readme.contains(needle), "README lacks {needle:?}");
     }
 }
 
